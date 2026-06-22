@@ -11,13 +11,16 @@ uses a **native Event Hub trigger** plus the embedded
 ```
 host Event Hub trigger
   -> gRPC -> handler decodes Azure resource logs to pdata (plog.Logs)
+              reusing contrib pkg/translator/azure (no reimplementation)
   -> ConsumeLogs (in-memory, via the inproc receiver)
   -> embedded collector's logs pipeline
   -> processors / exporters -> backend (Azure Monitor by default)
 ```
 
-The whole worker-side shim is two steps: **decode** ([resourcelogs.go](resourcelogs.go))
-and **forward** ([main.go](main.go)). Batching, retries, and the exporter are
+The worker-side code is just **transport glue + forward** ([main.go](main.go)):
+the decode is not reimplemented. The handler reuses the same `plog.Unmarshaler`
+(`pkg/translator/azure`) that the upstream receiver loads as its
+`azureresourcelogs` encoding extension. Batching, retries, and the exporter are
 the collector's job. Ingress is the custom in-process receiver in
 [inproc.go](inproc.go).
 
@@ -55,13 +58,21 @@ the invocation so the host retries.
 
 ## What this spike shows
 
-- The decode-and-forward worker code is small: one decode file, a ~30-line
-  handler, and a ~60-line in-process receiver.
-- The custom-handler HTTP bridge the upstream receiver implements is exactly
-  what the native trigger removes. You **replace** the receiver, you don't move
-  it. The piece with real value to preserve is the Azure-resource-logs → OTel
-  decoding (here in [resourcelogs.go](resourcelogs.go); upstream it's an
-  encoding extension).
+- The worker-side code is small and reuses the canonical decode: a ~30-line
+  handler plus a ~60-line in-process receiver, with **zero** decode
+  reimplementation — the Azure resource-logs schema is handled by the contrib
+  `pkg/translator/azure` unmarshaler (the exact code the upstream receiver runs
+  via its `azureresourcelogs` encoding extension), imported as a library.
+- This is the key reuse point: the receiver's *own* code is the custom-handler
+  HTTP transport, which is exactly what the native trigger replaces. The part
+  worth keeping — the decode — was already factored out of the receiver into
+  `pkg/translator/azure`, so the worker reuses it by import rather than by
+  embedding the receiver component. Reusing the receiver *factory* via
+  `WithFactories` would instead pull in its HTTP transport, which a worker app
+  never drives.
+- Version note: `pkg/translator/azure@v0.132.0` lines up with the collector
+  core (`v1.38.0`) that `otelcollector` pins, so it drops in with no version
+  juggling — the alignment that an `ocb` build would otherwise manage.
 - Gap surfaced: the typed `sdk.EventHubHandler` is **singular** — there is no
   batch ("many") cardinality form for Event Hub today (only CosmosDB exposes a
   slice handler). A real gateway wants batches for throughput. A single Azure

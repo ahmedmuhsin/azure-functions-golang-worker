@@ -5,8 +5,15 @@
 // Pipeline:
 //
 //	host Event Hub trigger -> gRPC -> this handler decodes Azure resource logs
-//	to pdata -> ConsumeLogs (in-memory) -> embedded collector's logs pipeline
-//	-> processors/exporters -> backend (Azure Monitor by default).
+//	to pdata (reusing the contrib pkg/translator/azure unmarshaler) ->
+//	ConsumeLogs (in-memory) -> embedded collector's logs pipeline ->
+//	processors/exporters -> backend (Azure Monitor by default).
+//
+// The decode is NOT reimplemented: the handler reuses the same
+// plog.Unmarshaler (pkg/translator/azure) that the upstream
+// azurefunctionsreceiver loads as its azureresourcelogs encoding extension, so
+// the only bespoke code is the worker transport glue. The custom-handler HTTP
+// transport the receiver implements is the one part the worker replaces.
 //
 // Ingress is in-process: a small custom "inproc" receiver (see inproc.go),
 // registered through otelcollector.WithFactories, captures the consumer at the
@@ -31,7 +38,10 @@ import (
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 	"github.com/azure/azure-functions-golang-worker/worker"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/azure"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/plog"
+	"go.uber.org/zap"
 )
 
 // collectorConfigYAML is a logs-only pipeline fed by the in-process receiver.
@@ -66,7 +76,8 @@ service:
 // first invocation (blocking until the collector has started) and cached for
 // the rest of the worker's life.
 type gateway struct {
-	tap *logsTap
+	tap         *logsTap
+	unmarshaler plog.Unmarshaler
 
 	mu   sync.Mutex
 	logs consumer.Logs
@@ -103,7 +114,7 @@ func (g *gateway) Handle(ctx context.Context, msg bindings.EventHubMessage) erro
 	if err != nil {
 		return err
 	}
-	ld, err := decodeResourceLogs(msg.Body)
+	ld, err := g.unmarshaler.UnmarshalLogs(msg.Body)
 	if err != nil {
 		return err
 	}
@@ -130,7 +141,16 @@ func main() {
 	tf := tap.factory()
 	factories.Receivers[tf.Type()] = tf
 
-	gw := &gateway{tap: tap}
+	// Reuse the canonical contrib decode (the same plog.Unmarshaler the upstream
+	// azurefunctionsreceiver loads as its azureresourcelogs encoding extension)
+	// rather than reimplementing the Azure resource-logs schema.
+	gw := &gateway{
+		tap: tap,
+		unmarshaler: &azure.ResourceLogsUnmarshaler{
+			Version: "eventHubOtelGateway",
+			Logger:  zap.NewNop(),
+		},
+	}
 
 	app := sdk.FunctionApp()
 
