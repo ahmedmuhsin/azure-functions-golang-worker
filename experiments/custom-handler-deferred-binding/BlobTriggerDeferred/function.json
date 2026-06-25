@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    {
+      "type": "blobTrigger",
+      "name": "myblob",
+      "direction": "in",
+      "path": "test-container/{name}",
+      "connection": "AzureWebJobsStorage",
+      "properties": { "SupportsDeferredBinding": true }
+    }
+  ]
+}

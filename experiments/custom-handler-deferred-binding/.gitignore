@@ -1,0 +1,7 @@
+# Build artifacts and local run state for this experiment.
+handler.exe
+uploader.exe
+captured.log
+_azurite/
+bin/
+obj/

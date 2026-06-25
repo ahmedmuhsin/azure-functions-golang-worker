@@ -1,0 +1,25 @@
+{
+  "bindings": [
+    {
+      "type": "httpTrigger",
+      "name": "req",
+      "direction": "in",
+      "authLevel": "anonymous",
+      "methods": ["get"],
+      "route": "read-deferred/{name}"
+    },
+    {
+      "type": "blob",
+      "name": "myblob",
+      "direction": "in",
+      "path": "test-container/{name}",
+      "connection": "AzureWebJobsStorage",
+      "properties": { "SupportsDeferredBinding": true }
+    },
+    {
+      "type": "http",
+      "name": "res",
+      "direction": "out"
+    }
+  ]
+}
