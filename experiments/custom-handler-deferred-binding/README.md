@@ -72,7 +72,8 @@ downloaded into the invocation.
 # ReadDeferred (deferred input binding)
 DEFERRED reference (Source="AzureStorageBlobs"), but no blob URL in the payload.
 The trigger exposes Metadata.Uri; an input binding does not, so a handler here
-would reconstruct the path from its binding template plus its own connection.
+would reconstruct the path from its binding template plus the app's
+AzureWebJobsStorage connection.
 
 # ReadContent (non-deferred input binding, control)
 NON-DEFERRED: host delivered the full content inline (39 bytes).
