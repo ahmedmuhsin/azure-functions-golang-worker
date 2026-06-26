@@ -20,7 +20,9 @@ that, for every invocation, logs the exact JSON body the host POSTs and then
 **acts on the binding**. When the host delivers a deferred reference, the
 handler builds an `azblob` client from it and does a ranged read, proving a
 plain custom handler can use the reference without the host ever loading the
-full blob. Three functions read the **same** 37 byte blob:
+full blob. The connection comes from the app's `AzureWebJobsStorage` setting,
+the same way any binding resolves it, so there is no account or key hard-coded
+in the handler. Three functions read the **same** 37 byte blob:
 
 | Function | Binding | `supportsDeferredBinding` |
 |---|---|---|
@@ -63,8 +65,9 @@ The reactions the handler logged (`--- handler reaction ---` in `captured.log`):
 ```text
 # BlobTriggerDeferred (deferred trigger)
 DEFERRED reference (Source="AzureStorageBlobs"): built a blob client from the
-host-supplied reference, read the first 5 of 37 bytes via a range request
-("THIS-"). The full blob was never downloaded into the invocation.
+host-supplied reference using the app's AzureWebJobsStorage connection, read the
+first 5 of 37 bytes via a range request ("THIS-"). The full blob was never
+downloaded into the invocation.
 
 # ReadDeferred (deferred input binding)
 DEFERRED reference (Source="AzureStorageBlobs"), but no blob URL in the payload.
@@ -83,8 +86,8 @@ So the platform behavior splits two ways:
   custom-handler boundary. The trigger hands you `Metadata.Uri`, so you build a
   client directly (done here). A deferred input binding hands you the reference
   descriptor but not the URL, so a handler reconstructs the blob path from its
-  binding template plus its own connection. A typed worker binding papers over
-  that difference, which is the ergonomics the worker adds.
+  binding template plus the app's AzureWebJobsStorage connection. A typed worker
+  binding papers over that difference, which is the ergonomics the worker adds.
 
 ## How to run
 
@@ -107,6 +110,13 @@ func start --port 7095
 Then hit `http://localhost:7095/api/read-deferred/hello.txt` and
 `http://localhost:7095/api/read-content/hello.txt`. The blob trigger fires on
 its own. Each invocation's payload is appended to `captured.log`.
+
+The storage connection lives in [local.settings.json](local.settings.json) under
+`AzureWebJobsStorage`. The host passes it to the handler as an environment
+variable, and the uploader reads the same file, so neither binary carries a
+hard-coded account or key. It is set to the explicit Azurite dev connection
+string, which is what `UseDevelopmentStorage=true` expands to, because the Go
+storage SDK does not understand that shorthand.
 
 > Verified on func core tools 4.12.0, extension bundle 4.34.0, Azurite, against
 > the released host (no host changes).

@@ -10,15 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
-)
-
-// Azurite well-known development account. Used to build a client from the blob
-// reference the host delivers under supportsDeferredBinding.
-const (
-	devAccount = "devstoreaccount1"
-	devKey     = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 )
 
 // invoke is the subset of the Azure Functions custom-handler invoke payload we
@@ -95,15 +87,23 @@ func react(ctx context.Context, body []byte) string {
 	uri := blobURI(inv)
 	if uri == "" {
 		return fmt.Sprintf("DEFERRED reference (Source=%q), but no blob URL in the payload. "+
-			"The trigger exposes Metadata.Uri; an input binding does not, so a handler here "+
-			"would reconstruct the path from its binding template plus its own connection.", ref.Source)
+			"The trigger exposes Metadata.Uri; an input binding does not, so a handler here would "+
+			"reconstruct the path from its binding template plus the app's AzureWebJobsStorage connection.", ref.Source)
 	}
 
-	cred, err := azblob.NewSharedKeyCredential(devAccount, devKey)
-	if err != nil {
-		return "build credential: " + err.Error()
+	// Build a client for exactly the blob the host pointed us at. The blob path
+	// comes from the host-supplied reference (Metadata.Uri); the connection comes
+	// from the app's AzureWebJobsStorage setting, the same way a binding resolves
+	// it under the hood. No account or key is hard-coded here.
+	connStr := os.Getenv("AzureWebJobsStorage")
+	if connStr == "" {
+		return "DEFERRED reference, but AzureWebJobsStorage is not set in the environment"
 	}
-	client, err := blob.NewClientWithSharedKeyCredential(uri, cred, nil)
+	parts, err := blob.ParseURL(uri)
+	if err != nil {
+		return "parse blob url: " + err.Error()
+	}
+	client, err := blob.NewClientFromConnectionString(connStr, parts.ContainerName, parts.BlobName, nil)
 	if err != nil {
 		return "build blob client: " + err.Error()
 	}
@@ -130,8 +130,9 @@ func react(ctx context.Context, body []byte) string {
 	_ = dl.Body.Close()
 
 	return fmt.Sprintf("DEFERRED reference (Source=%q): built a blob client from the host-supplied "+
-		"reference, read the first %d of %d bytes via a range request (%q). The full blob was never "+
-		"downloaded into the invocation.", ref.Source, len(head), full, string(head))
+		"reference using the app's AzureWebJobsStorage connection, read the first %d of %d bytes via a "+
+		"range request (%q). The full blob was never downloaded into the invocation.",
+		ref.Source, len(head), full, string(head))
 }
 
 // blobURI extracts a blob URL from the invoke metadata. The blob trigger puts
