@@ -15,10 +15,12 @@ it too, via a function.json property. What the worker adds on top is ergonomics
 
 ## What it does
 
-The handler ([src/handler/main.go](src/handler/main.go)) is a minimal HTTP
-server that logs the exact JSON body the host POSTs for every invocation, then
-returns an empty custom-handler response. Three functions read the **same**
-37 byte blob:
+The handler ([src/handler/main.go](src/handler/main.go)) is a small HTTP server
+that, for every invocation, logs the exact JSON body the host POSTs and then
+**acts on the binding**. When the host delivers a deferred reference, the
+handler builds an `azblob` client from it and does a ranged read, proving a
+plain custom handler can use the reference without the host ever loading the
+full blob. Three functions read the **same** 37 byte blob:
 
 | Function | Binding | `supportsDeferredBinding` |
 |---|---|---|
@@ -54,11 +56,35 @@ The control (deferred off) gets the **full content** inline:
 Same handler, same blob. The only difference is the function.json property, which
 proves the host (not the handler) decides reference vs content.
 
-The reference carries `Source: AzureStorageBlobs` plus a small content
-descriptor. That is exactly the JSON a custom handler would parse to build its
-own blob client and do a ranged read or skip the download. A helper library
-could wrap that reference-to-client step so custom handler authors do not
-hand-roll it.
+## What the handler does with each
+
+The reactions the handler logged (`--- handler reaction ---` in `captured.log`):
+
+```text
+# BlobTriggerDeferred (deferred trigger)
+DEFERRED reference (Source="AzureStorageBlobs"): built a blob client from the
+host-supplied reference, read the first 5 of 37 bytes via a range request
+("THIS-"). The full blob was never downloaded into the invocation.
+
+# ReadDeferred (deferred input binding)
+DEFERRED reference (Source="AzureStorageBlobs"), but no blob URL in the payload.
+The trigger exposes Metadata.Uri; an input binding does not, so a handler here
+would reconstruct the path from its binding template plus its own connection.
+
+# ReadContent (non-deferred input binding, control)
+NON-DEFERRED: host delivered the full content inline (39 bytes).
+```
+
+So the platform behavior splits two ways:
+
+- **Deferred on vs off** decides reference vs content. That is the memory win,
+  and it is the host's call, not the worker's.
+- **Trigger vs input binding** decides how actionable the reference is over the
+  custom-handler boundary. The trigger hands you `Metadata.Uri`, so you build a
+  client directly (done here). A deferred input binding hands you the reference
+  descriptor but not the URL, so a handler reconstructs the blob path from its
+  binding template plus its own connection. A typed worker binding papers over
+  that difference, which is the ergonomics the worker adds.
 
 ## How to run
 
