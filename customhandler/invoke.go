@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
-	"runtime/debug"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 )
@@ -177,17 +176,12 @@ func (d *dispatcher) bindEnvelopeArgs(ctx context.Context, lf *loadedFn, ic *sdk
 	return args, nil, nil
 }
 
-// runInvocation composes the middleware chain around the reflective call and
-// executes it, converting a panic into a recovered value the caller can log.
-// The contract mirrors the worker's runUserInvocation.
+// runInvocation builds the transport-specific inner Handler (ctx re-injection,
+// reflective call, return-value capture) and hands it to [sdk.RunInvocation],
+// which owns middleware composition and panic recovery — the same execution
+// core the gRPC worker uses. The contract mirrors the worker's path so both
+// transports behave identically.
 func (d *dispatcher) runInvocation(ctx context.Context, mc *sdk.MiddlewareContext, lf *loadedFn, args []reflect.Value) (returnVal any, err error, recovered any, stack string) {
-	defer func() {
-		if r := recover(); r != nil {
-			recovered = r
-			stack = string(debug.Stack())
-		}
-	}()
-
 	inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
 		// Re-inject the (possibly middleware-enriched) ctx into the argument
 		// list right before the call, matching the worker's contract.
@@ -214,6 +208,6 @@ func (d *dispatcher) runInvocation(ctx context.Context, mc *sdk.MiddlewareContex
 		return nil
 	}
 
-	err = d.app.Compose(inner)(ctx, mc)
+	recovered, stack, err = sdk.RunInvocation(ctx, mc, d.app, inner)
 	return returnVal, err, recovered, stack
 }
