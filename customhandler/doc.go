@@ -18,7 +18,7 @@
 // Collector receiver) without that program surrendering its process launch.
 // The custom-handler protocol is just an HTTP server, which reduces cleanly to
 // an [http.Handler] — a mountable component. This package therefore exposes
-// three surfaces at increasing levels of process ownership:
+// these surfaces at increasing levels of process ownership:
 //
 //   - [Handler] returns an http.Handler. It owns nothing at process scope: no
 //     os.Exit, no signal handling, no flag parsing, no global logger. Mount it
@@ -26,11 +26,16 @@
 //     server, an existing mux).
 //   - [Serve] is a thin convenience wrapper for standalone apps: it reads
 //     FUNCTIONS_CUSTOMHANDLER_PORT, listens, and blocks until SIGINT/SIGTERM,
-//     then drains middleware shutdowns. It is the only surface that touches
-//     process-level concerns.
-//   - [EmitConfig] generates the function.json files and the host.json
-//     customHandler section from the registry, so the on-disk Functions
-//     contract is derived from code instead of hand-written.
+//     then drains middleware shutdowns.
+//   - [Run] is the one-line standalone entry point (the custom-handler analogue
+//     of worker.Start): invoked as "<binary> --emit-config [dir]" it writes the
+//     function.json files, otherwise it serves. It owns process-level concerns
+//     (argument parsing, os.Exit).
+//   - [EmitFunctions] writes the function.json files from the registry, so the
+//     binding metadata is derived from code instead of hand-written. host.json
+//     is not generated — it is a user/template-owned file (extension bundle,
+//     logging, the customHandler executable and port), authored as in any
+//     Functions app.
 //
 // # Programming model over custom handlers
 //
@@ -39,7 +44,7 @@
 //	app.HTTP("hello", hello, sdk.WithMethods("GET"))
 //
 //	// Standalone:
-//	customhandler.Serve(app)
+//	customhandler.Run(app)
 //
 //	// Embedded in another server (e.g. a collector receiver):
 //	mux.Handle("/", customhandler.Handler(app))
@@ -51,16 +56,17 @@
 //
 // Custom handlers are indexed by the host from function.json on disk, not by a
 // runtime metadata request (the custom-handler protocol has no equivalent of
-// FunctionsMetadataRequest). [EmitConfig] closes that gap by serializing the
+// FunctionsMetadataRequest). [EmitFunctions] closes that gap by serializing the
 // registry to disk at build time — the same RawBindings the gRPC worker sends
 // to the host, written as files:
 //
-//	app --emit-config ./out   // publish step
-//	app                        // runtime (customhandler.Serve)
+//	app --emit-config ./out   // publish step: writes one function.json per function
+//	app                        // runtime (customhandler.Run serves)
 //
 // Because both the gRPC metadata response and the generated function.json
 // derive from the same registrations, the two deployment modes describe
-// identical functions.
+// identical functions. Only function.json is generated; host.json is supplied
+// from a template, as in any Functions app.
 //
 // # Scope and fidelity
 //

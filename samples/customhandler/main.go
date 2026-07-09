@@ -6,13 +6,16 @@
 // Build and run under the Functions host:
 //
 //	go build -o handler .            # Linux/macOS (use handler.exe on Windows)
-//	./handler --emit-config .        # generate host.json + <func>/function.json
+//	./handler --emit-config .        # generate one function.json per function
 //	func start                       # the host launches ./handler as a custom handler
 //
-// With no arguments the binary runs customhandler.Serve, listening on the port
-// the host supplies via FUNCTIONS_CUSTOMHANDLER_PORT. The --emit-config step is
-// build-time indexing: the Functions contract is generated from the same
-// in-code registrations, so there is no hand-written function.json to drift.
+// host.json is committed alongside this sample, as in any Functions app: it
+// carries the customHandler executable/port and extension-bundle settings.
+// customhandler.Run drives everything else — with no arguments it serves on the
+// port the host supplies via FUNCTIONS_CUSTOMHANDLER_PORT, and with
+// "--emit-config <dir>" it performs build-time indexing, generating the
+// function.json files from the same in-code registrations so the binding
+// metadata never drifts from the code.
 package main
 
 import (
@@ -20,8 +23,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/azure/azure-functions-golang-worker/customhandler"
 	"github.com/azure/azure-functions-golang-worker/sdk"
@@ -44,27 +45,11 @@ func main() {
 	app.HTTP("hello", hello, sdk.WithMethods("GET", "POST"), sdk.WithAuth("anonymous"))
 	app.Timer("heartbeat", heartbeat, sdk.WithSchedule("0 */5 * * * *"))
 
-	// Build-time indexing path: `handler --emit-config <dir>` writes host.json
-	// and one function.json per registered function, generated from the
-	// registry above.
-	if len(os.Args) > 2 && os.Args[1] == "--emit-config" {
-		if err := customhandler.EmitConfig(app, os.Args[2],
-			customhandler.WithExecutable(executableName()),
-			customhandler.WithForwardingConfig(true),
-		); err != nil {
-			fmt.Fprintln(os.Stderr, "emit-config:", err)
-			os.Exit(1)
-		}
-		fmt.Println("wrote host.json and function.json to", os.Args[2])
-		return
-	}
-
-	// Runtime path: serve the app over the custom-handler HTTP protocol. With
-	// forwarding enabled, HTTP triggers receive the raw request/response.
-	if err := customhandler.Serve(app, customhandler.WithForwardedHTTP()); err != nil {
-		fmt.Fprintln(os.Stderr, "serve:", err)
-		os.Exit(1)
-	}
+	// One-line entry point (the custom-handler analogue of worker.Start):
+	// `handler --emit-config <dir>` writes the function.json files; otherwise it
+	// serves over the custom-handler protocol. WithForwardedHTTP delivers the raw
+	// request/response to HTTP handlers.
+	customhandler.Run(app, customhandler.WithForwardedHTTP())
 }
 
 // hello is a standard net/http handler — unchanged from a native-worker app.
@@ -80,13 +65,4 @@ func hello(w http.ResponseWriter, r *http.Request) {
 func heartbeat(ctx context.Context, timer bindings.TimerInfo) error {
 	slog.InfoContext(ctx, "heartbeat fired", "past_due", timer.IsPastDue)
 	return nil
-}
-
-// executableName reports the running binary's file name so the generated
-// host.json points defaultExecutablePath at whatever the binary was built as.
-func executableName() string {
-	if len(os.Args) > 0 && os.Args[0] != "" {
-		return filepath.Base(os.Args[0])
-	}
-	return "handler"
 }

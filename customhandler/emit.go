@@ -8,74 +8,27 @@ import (
 	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
-// defaultExtensionBundle is the extension-bundle range written into a generated
-// host.json. It matches the range the host samples ship with.
-const defaultExtensionBundle = "[4.*, 5.0.0)"
-
-// emitConfig holds resolved [EmitConfig] options.
-type emitConfig struct {
-	executable  string
-	arguments   []string
-	forwardHTTP bool
-	bundle      string
-}
-
-// EmitOption configures [EmitConfig].
-type EmitOption func(*emitConfig)
-
-// WithExecutable sets host.json customHandler.description.defaultExecutablePath
-// — the compiled handler binary the host launches. Defaults to "handler".
-func WithExecutable(path string) EmitOption {
-	return func(c *emitConfig) { c.executable = path }
-}
-
-// WithArguments sets host.json customHandler.description.arguments.
-func WithArguments(args ...string) EmitOption {
-	return func(c *emitConfig) { c.arguments = args }
-}
-
-// WithForwardingConfig sets host.json customHandler.enableForwardingHttpRequest.
-// Keep it consistent with whether the handler was built with
-// [WithForwardedHTTP].
-func WithForwardingConfig(enabled bool) EmitOption {
-	return func(c *emitConfig) { c.forwardHTTP = enabled }
-}
-
-// WithExtensionBundle overrides the extension-bundle version range in host.json.
-func WithExtensionBundle(version string) EmitOption {
-	return func(c *emitConfig) { c.bundle = version }
-}
-
-// EmitConfig writes the on-disk Functions configuration a custom-handler
-// deployment needs, generated from the app's in-code registrations:
-//
-//   - <outDir>/<functionName>/function.json for each registered function
-//   - <outDir>/host.json with the customHandler section
+// EmitFunctions writes one <outDir>/<functionName>/function.json per registered
+// function, generated from the app's in-code registrations.
 //
 // It is the build-time analogue of the worker's runtime worker-driven indexing:
-// the same RawBindings the gRPC worker sends to the host in a
+// the same RawBindings the gRPC worker sends the host in a
 // FunctionMetadataResponse are serialized to the function.json files the stock
 // host reads from disk. Because both derive from the same registrations, the
 // gRPC and custom-handler deployments describe identical functions — the
-// on-disk JSON cannot drift from the code.
+// on-disk metadata cannot drift from the code.
 //
-// Typical use is a build/publish step invoked from the same binary that serves
-// the app (so the registry is the single source of truth):
+// EmitFunctions deliberately does not write host.json. That file carries
+// user/deployment-owned settings (extension bundle, logging, and the
+// customHandler executable and port) and is supplied from a template, exactly
+// as host.json is authored by hand in non-custom-handler apps.
 //
-//	if len(os.Args) > 1 && os.Args[1] == "--emit-config" {
-//	    _ = customhandler.EmitConfig(app, os.Args[2])
-//	    return
-//	}
-//	customhandler.Serve(app)
-func EmitConfig(app *sdk.App, outDir string, opts ...EmitOption) error {
-	cfg := &emitConfig{
-		executable: "handler",
-		bundle:     defaultExtensionBundle,
-	}
-	for _, o := range opts {
-		o(cfg)
-	}
-
+// It is typically invoked as a build/publish step from the same binary that
+// serves the app — see [Run], which wires the "--emit-config" convention — or
+// called directly:
+//
+//	if err := customhandler.EmitFunctions(app, "."); err != nil { ... }
+func EmitFunctions(app *sdk.App, outDir string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
@@ -89,11 +42,7 @@ func EmitConfig(app *sdk.App, outDir string, opts ...EmitOption) error {
 		}
 		return true
 	})
-	if emitErr != nil {
-		return emitErr
-	}
-
-	return writeHostJSON(outDir, cfg)
+	return emitErr
 }
 
 // writeFunctionJSON serializes one function's bindings to
@@ -123,32 +72,4 @@ func writeFunctionJSON(outDir string, rf *sdk.RegisteredFunction) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "function.json"), append(data, '\n'), 0o644)
-}
-
-// writeHostJSON writes the host.json with the customHandler section.
-func writeHostJSON(outDir string, cfg *emitConfig) error {
-	description := map[string]any{
-		"defaultExecutablePath": cfg.executable,
-	}
-	if len(cfg.arguments) > 0 {
-		description["arguments"] = cfg.arguments
-	}
-
-	doc := map[string]any{
-		"version": "2.0",
-		"extensionBundle": map[string]any{
-			"id":      "Microsoft.Azure.Functions.ExtensionBundle",
-			"version": cfg.bundle,
-		},
-		"customHandler": map[string]any{
-			"description":                 description,
-			"enableForwardingHttpRequest": cfg.forwardHTTP,
-		},
-	}
-
-	data, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(outDir, "host.json"), append(data, '\n'), 0o644)
 }

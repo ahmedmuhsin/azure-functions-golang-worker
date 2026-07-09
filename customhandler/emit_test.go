@@ -12,14 +12,14 @@ import (
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 )
 
-func TestEmitConfig_GeneratesFunctionJSON(t *testing.T) {
+func TestEmitFunctions_GeneratesFunctionJSON(t *testing.T) {
 	app := sdk.FunctionApp()
 	app.HTTP("hello", func(_ http.ResponseWriter, _ *http.Request) {}, sdk.WithMethods("GET", "POST"))
 	app.Timer("cron", func(_ context.Context, _ bindings.TimerInfo) error { return nil }, sdk.WithSchedule("0 */5 * * * *"))
 
 	out := t.TempDir()
-	if err := EmitConfig(app, out, WithExecutable("myhandler"), WithForwardingConfig(true)); err != nil {
-		t.Fatalf("EmitConfig: %v", err)
+	if err := EmitFunctions(app, out); err != nil {
+		t.Fatalf("EmitFunctions: %v", err)
 	}
 
 	// HTTP function.json: httpTrigger in + http out rewritten to "res".
@@ -38,38 +38,18 @@ func TestEmitConfig_GeneratesFunctionJSON(t *testing.T) {
 	}
 }
 
-func TestEmitConfig_GeneratesHostJSON(t *testing.T) {
+func TestEmitFunctions_DoesNotWriteHostJSON(t *testing.T) {
 	app := sdk.FunctionApp()
 	app.HTTP("hello", func(_ http.ResponseWriter, _ *http.Request) {})
 
 	out := t.TempDir()
-	if err := EmitConfig(app, out, WithExecutable("myhandler"), WithArguments("--serve"), WithForwardingConfig(true)); err != nil {
-		t.Fatalf("EmitConfig: %v", err)
+	if err := EmitFunctions(app, out); err != nil {
+		t.Fatalf("EmitFunctions: %v", err)
 	}
 
-	var host struct {
-		Version       string `json:"version"`
-		CustomHandler struct {
-			EnableForwardingHTTPRequest bool `json:"enableForwardingHttpRequest"`
-			Description                 struct {
-				DefaultExecutablePath string   `json:"defaultExecutablePath"`
-				Arguments             []string `json:"arguments"`
-			} `json:"description"`
-		} `json:"customHandler"`
-	}
-	readJSON(t, filepath.Join(out, "host.json"), &host)
-
-	if host.Version != "2.0" {
-		t.Errorf("host version = %q, want 2.0", host.Version)
-	}
-	if !host.CustomHandler.EnableForwardingHTTPRequest {
-		t.Error("enableForwardingHttpRequest = false, want true")
-	}
-	if host.CustomHandler.Description.DefaultExecutablePath != "myhandler" {
-		t.Errorf("defaultExecutablePath = %q, want myhandler", host.CustomHandler.Description.DefaultExecutablePath)
-	}
-	if len(host.CustomHandler.Description.Arguments) != 1 || host.CustomHandler.Description.Arguments[0] != "--serve" {
-		t.Errorf("arguments = %v, want [--serve]", host.CustomHandler.Description.Arguments)
+	// host.json is user/template-owned; EmitFunctions must not create it.
+	if _, err := os.Stat(filepath.Join(out, "host.json")); !os.IsNotExist(err) {
+		t.Errorf("host.json should not be written by EmitFunctions (stat err = %v)", err)
 	}
 }
 
