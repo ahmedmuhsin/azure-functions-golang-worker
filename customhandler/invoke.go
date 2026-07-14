@@ -90,9 +90,15 @@ func (d *dispatcher) serveEnvelope(lf *loadedFn, w http.ResponseWriter, r *http.
 	}
 
 	resp := InvokeResponse{}
+	if outs := mc.Outputs(); len(outs) > 0 {
+		resp.Outputs = outs
+	}
 	switch {
 	case lf.isHTTP && capture != nil:
-		resp.Outputs = map[string]any{"res": capture.toPayload()}
+		if resp.Outputs == nil {
+			resp.Outputs = make(map[string]any, 1)
+		}
+		resp.Outputs["res"] = capture.toPayload()
 	case returnVal != nil:
 		resp.ReturnValue = returnVal
 	}

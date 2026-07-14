@@ -45,6 +45,15 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// resolveConfig applies opts onto a default config.
+func resolveConfig(opts ...Option) *config {
+	cfg := &config{logger: slog.Default()}
+	for _, o := range opts {
+		o(cfg)
+	}
+	return cfg
+}
+
 // Handler builds an [http.Handler] that serves the app's registered functions
 // over the custom-handler protocol. It owns nothing at process scope, so it is
 // safe to mount on a listener the caller already owns.
@@ -56,10 +65,7 @@ func WithLogger(l *slog.Logger) Option {
 //     route (e.g. /api/hello) is dispatched to that handler with the raw
 //     request and response.
 func Handler(app *sdk.App, opts ...Option) http.Handler {
-	cfg := &config{logger: slog.Default()}
-	for _, o := range opts {
-		o(cfg)
-	}
+	cfg := resolveConfig(opts...)
 
 	d := &dispatcher{
 		app:     app,
@@ -129,4 +135,17 @@ func routePath(rf *sdk.RegisteredFunction) string {
 // isHTTPTrigger reports whether rf is registered as an HTTP trigger.
 func isHTTPTrigger(rf *sdk.RegisteredFunction) bool {
 	return rf.TriggerType == string(bindings.HTTPTriggerType)
+}
+
+// appHasHTTPFunctions reports whether the app registered any HTTP trigger.
+func appHasHTTPFunctions(app *sdk.App) bool {
+	found := false
+	app.GetRegisteredFunctions().Range(func(_, v any) bool {
+		if isHTTPTrigger(v.(*sdk.RegisteredFunction)) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }

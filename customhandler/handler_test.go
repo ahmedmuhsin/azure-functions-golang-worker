@@ -91,6 +91,27 @@ func TestHandler_TimerEnvelope(t *testing.T) {
 	}
 }
 
+func TestHandler_NamedOutputs(t *testing.T) {
+	app := sdk.FunctionApp()
+	app.Timer("cron", func(ctx context.Context, _ bindings.TimerInfo) error {
+		if mc, ok := sdk.MiddlewareContextFrom(ctx); ok {
+			mc.SetOutput("failedMessage", map[string]string{"error": "boom"})
+		}
+		return nil
+	})
+
+	timerPayload, _ := json.Marshal(bindings.TimerInfo{})
+	req := InvokeRequest{Data: map[string]json.RawMessage{"timer": timerPayload}}
+	resp, rec := postEnvelope(t, Handler(app), "cron", req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if _, ok := resp.Outputs["failedMessage"]; !ok {
+		t.Errorf("response Outputs missing failedMessage: %+v", resp.Outputs)
+	}
+}
+
 func TestHandler_ForwardedHTTP(t *testing.T) {
 	app := sdk.FunctionApp()
 	app.HTTP("hello", func(w http.ResponseWriter, r *http.Request) {
