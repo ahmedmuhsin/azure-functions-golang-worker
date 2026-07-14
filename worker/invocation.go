@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
@@ -12,9 +11,14 @@ import (
 // runUserInvocation composes the middleware chain around inner, executes
 // it, and converts both errors AND panics into normal return values.
 //
+// The execution core now lives in [sdk.RunInvocation] so the gRPC worker and
+// the custom-handler transport share identical middleware-composition and
+// panic-handling semantics. This thin wrapper is retained so the worker's
+// existing call sites and tests keep their package-local name.
+//
 // Both the gRPC-body and HTTP-streaming paths run user code through
 // app.Compose; they previously diverged on panic handling (HTTP recovered
-// inline, gRPC let the panic propagate to the dispatch goroutine). This
+// inline, gRPC let the panic propagate to the dispatch goroutine). The shared
 // helper centralizes the contract:
 //
 //   - If the user code panics, recovered carries the recovered value
@@ -28,18 +32,7 @@ import (
 func runUserInvocation(ctx context.Context, mc *sdk.MiddlewareContext, app *sdk.App,
 	inner sdk.Handler) (recovered any, stack string, err error) {
 
-	defer func() {
-		if r := recover(); r != nil {
-			recovered = r
-			stack = string(debug.Stack())
-		}
-	}()
-
-	if app == nil {
-		return nil, "", inner(ctx, mc)
-	}
-	chain := app.Compose(inner)
-	return nil, "", chain(ctx, mc)
+	return sdk.RunInvocation(ctx, mc, app, inner)
 }
 
 // statusFromInvocation converts the (recovered, stack, err) triple

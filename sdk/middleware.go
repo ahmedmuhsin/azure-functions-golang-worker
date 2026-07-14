@@ -1,18 +1,3 @@
-// Package sdk provides the core function-app and middleware abstractions for
-// the Azure Functions Go worker. This file documents the middleware design
-// intent.
-//
-// # Middleware extensibility
-//
-// The Middleware interface (Wrap(next Handler) -> Handler) is deliberately
-// minimal, matching the shape established by net/http (Handler/HandlerFunc)
-// and gRPC interceptors. It supports the full range of cross-cutting
-// concerns: distributed tracing, structured logging, authentication, retry
-// policies, panic recovery, and request/response validation.
-//
-// Middleware that wants to replace function execution entirely (e.g.
-// orchestration replay) can short-circuit the chain by skipping next();
-// no separate extension point is provided today.
 package sdk
 
 import "context"
@@ -75,18 +60,20 @@ func (f MiddlewareFunc) Wrap(next Handler) Handler {
 }
 
 // CapabilityProvider is an optional contract a [Middleware] can implement to
-// advertise worker-level capability flags to the Functions host.
+// advertise capability flags that a transport may relay to the Functions host.
 //
-// When a Middleware is registered via [App.Use], the App checks whether it
-// satisfies CapabilityProvider; if so, the returned capability map is merged
-// into the App's capability map, which the worker dispatcher copies into the
-// WorkerInitResponse.Capabilities field so the host knows what the worker
-// supports.
+// When a Middleware is registered via [App.Use], the App merges the returned
+// map into [App.Capabilities]. How — and whether — those flags reach the host
+// is transport-specific: the gRPC worker copies them into
+// WorkerInitResponse.Capabilities during its startup handshake, while a
+// transport without runtime capability negotiation (for example the custom
+// handler, whose capabilities are declared statically in host.json) ignores
+// them.
 //
 // The standard use case is a tracing middleware advertising
-// "WorkerOpenTelemetryEnabled": "true" so the host knows the worker is
-// emitting OTel telemetry directly and shouldn't double-emit to Application
-// Insights for the same invocation.
+// "WorkerOpenTelemetryEnabled": "true" so a host that supports the flag knows
+// the worker is emitting OTel telemetry directly and shouldn't double-emit to
+// Application Insights for the same invocation.
 //
 // Implementations should return a stable, side-effect-free map. The App reads
 // it once at registration time.

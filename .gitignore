@@ -420,6 +420,9 @@ go.work.sum
 # Go module files for samples
 samples/*/go.mod
 samples/*/go.sum
+# Exception: the customhandler sample is a committed, self-contained module.
+!samples/customhandler/go.mod
+!samples/customhandler/go.sum
 # Local deployment staging
 .deploy-stage/
 test-int*.log

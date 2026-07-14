@@ -33,6 +33,7 @@ type MiddlewareContext struct {
 
 	mu                 sync.Mutex
 	outboundTraceAttrs map[string]string
+	outputs            map[string]any
 }
 
 // ContextWithMiddleware returns a context that carries the given
@@ -67,11 +68,13 @@ func MiddlewareContextFrom(ctx context.Context) (*MiddlewareContext, bool) {
 	return mc, ok && mc != nil
 }
 
-// SetOutboundTraceAttribute records a key/value pair to forward to the
-// host on InvocationResponse.TraceContextAttributes. The host applies
-// each entry as a tag on its parent activity via Activity.AddTag(k, v),
-// surfacing them on the host-emitted "request" record in Application
-// Insights.
+// SetOutboundTraceAttribute records a key/value pair for the active transport
+// to forward to the host. The gRPC worker sends them on
+// InvocationResponse.TraceContextAttributes, and the host applies each entry as
+// a tag on its parent activity via Activity.AddTag(k, v), surfacing them on the
+// host-emitted "request" record in Application Insights. A transport with no
+// slot for outbound trace attributes (for example the custom handler) records
+// them but does not forward them.
 //
 // Intended for middleware integration. User code that wants to tag the
 // host's parent span should call span.SetAttributes on the worker
@@ -103,4 +106,39 @@ func (mc *MiddlewareContext) OutboundTraceAttributes() map[string]string {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	return mc.outboundTraceAttrs
+}
+
+// SetOutput records a value for a named output binding. The active transport
+// encodes recorded outputs into its invocation response — the custom handler
+// into InvokeResponse.Outputs; a transport that does not surface named outputs
+// (today, the gRPC worker path) ignores them.
+//
+// This lets a handler acknowledge an invocation as successful while still
+// routing data to an output binding — for example dead-lettering an
+// unprocessable message instead of failing the invocation.
+//
+// Safe to call from multiple goroutines.
+func (mc *MiddlewareContext) SetOutput(name string, value any) {
+	if mc == nil {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	if mc.outputs == nil {
+		mc.outputs = make(map[string]any, 2)
+	}
+	mc.outputs[name] = value
+}
+
+// Outputs returns the recorded named output bindings, or nil when none have
+// been set. The returned map is the live backing store; callers needing an
+// immutable snapshot should copy it. Intended for the active transport's
+// response builder.
+func (mc *MiddlewareContext) Outputs() map[string]any {
+	if mc == nil {
+		return nil
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	return mc.outputs
 }
