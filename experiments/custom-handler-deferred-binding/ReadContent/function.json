@@ -1,0 +1,24 @@
+{
+  "bindings": [
+    {
+      "type": "httpTrigger",
+      "name": "req",
+      "direction": "in",
+      "authLevel": "anonymous",
+      "methods": ["get"],
+      "route": "read-content/{name}"
+    },
+    {
+      "type": "blob",
+      "name": "myblob",
+      "direction": "in",
+      "path": "test-container/{name}",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "http",
+      "name": "res",
+      "direction": "out"
+    }
+  ]
+}
