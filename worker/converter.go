@@ -21,21 +21,38 @@ type funcField struct {
 	Direction  string // "in" or "out"
 	IsArgument bool   // true if mapped to function argument, false if return value
 	IsWriter   bool   // true if this argument is an http.ResponseWriter
+	Generic    bool   // explicit raw/JSON conversion instead of legacy trigger-model matching
 }
 
 // FromProto converts protobuf parameters to golang values
 // Only processes "in" bindings mapped to Arguments.
 func FromProto(req *pb.InvocationRequest, fields map[string]*funcField, args []reflect.Value) error {
+	seen := make(map[string]bool)
 	for _, input := range req.InputData {
 		param, ok := fields[input.Name]
 		if ok && param.Direction == "in" && param.IsArgument {
 			if param.Position < len(args) {
-				r, err := convertToTypeValue(param.Type, input.GetData(), req.GetTriggerMetadata())
+				var r reflect.Value
+				var err error
+				if param.Generic {
+					if seen[input.Name] {
+						return fmt.Errorf("binding %q: duplicate input", input.Name)
+					}
+					seen[input.Name] = true
+					r, err = decodeGenericInput(param.Type, input.GetData())
+				} else {
+					r, err = convertToTypeValue(param.Type, input.GetData(), req.GetTriggerMetadata())
+				}
 				if err != nil {
-					return err
+					return fmt.Errorf("binding %q: %w", input.Name, err)
 				}
 				args[param.Position] = r
 			}
+		}
+	}
+	for name, param := range fields {
+		if param.Generic && param.Direction == "in" && param.IsArgument && !seen[name] {
+			return fmt.Errorf("binding %q: missing input", name)
 		}
 	}
 	return nil
@@ -472,20 +489,41 @@ func encodeHTTPResponse(proxy *ResponseWriterProxy) *pb.TypedData {
 // base64-encoded actions lands as a plain string the host's DurableTask
 // extension can read), and everything else is JSON-encoded so the host can
 // route it to output bindings / the function result.
-func encodeReturnValue(v any) *pb.TypedData {
+func encodeReturnValue(v any) (data *pb.TypedData, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			data = nil
+			err = fmt.Errorf("encode return value: %v", recovered)
+		}
+	}()
 	switch val := v.(type) {
 	case nil:
-		return nil
+		return nil, nil
 	case string:
-		return &pb.TypedData{Data: &pb.TypedData_String_{String_: val}}
+		return &pb.TypedData{Data: &pb.TypedData_String_{String_: val}}, nil
 	case []byte:
-		return &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: val}}
+		return &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: val}}, nil
 	default:
+		// Preserve defined string/byte types too, but honor explicit JSON
+		// marshalers such as json.RawMessage before considering their kind.
+		if _, marshaler := v.(json.Marshaler); !marshaler {
+			rv := reflect.ValueOf(v)
+			if rv.Kind() == reflect.String {
+				return &pb.TypedData{Data: &pb.TypedData_String_{String_: rv.String()}}, nil
+			}
+			if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
+				payload := make([]byte, rv.Len())
+				for i := range payload {
+					payload[i] = byte(rv.Index(i).Uint())
+				}
+				return &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: payload}}, nil
+			}
+		}
 		b, err := json.Marshal(val)
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("encode return value: %w", err)
 		}
-		return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(b)}}
+		return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(b)}}, nil
 	}
 }
 

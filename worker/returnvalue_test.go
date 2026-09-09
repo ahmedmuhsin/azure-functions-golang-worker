@@ -15,19 +15,27 @@ import (
 // mc.SetReturnValue): strings and bytes pass through as the matching
 // TypedData kind; everything else is JSON-encoded; nil yields no TypedData.
 func TestEncodeReturnValue(t *testing.T) {
-	if td := encodeReturnValue(nil); td != nil {
+	encode := func(value any) *pb.TypedData {
+		t.Helper()
+		data, err := encodeReturnValue(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	if td := encode(nil); td != nil {
 		t.Errorf("nil → %v, want nil", td)
 	}
-	if td := encodeReturnValue("hi"); td.GetString_() != "hi" {
+	if td := encode("hi"); td.GetString_() != "hi" {
 		t.Errorf("string → %q, want hi", td.GetString_())
 	}
-	if td := encodeReturnValue([]byte("bytes")); string(td.GetBytes()) != "bytes" {
+	if td := encode([]byte("bytes")); string(td.GetBytes()) != "bytes" {
 		t.Errorf("[]byte → %q, want bytes", td.GetBytes())
 	}
 	type payload struct {
 		A int `json:"a"`
 	}
-	if td := encodeReturnValue(payload{A: 7}); td.GetJson() != `{"a":7}` {
+	if td := encode(payload{A: 7}); td.GetJson() != `{"a":7}` {
 		t.Errorf("struct → %q, want {\"a\":7}", td.GetJson())
 	}
 }
