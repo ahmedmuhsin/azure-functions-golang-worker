@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/azure/azure-functions-golang-worker/internal/bindingtype"
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 )
 
@@ -20,7 +21,17 @@ import (
 // the other App registration methods. Caller-owned properties are snapshotted.
 //
 // Strings and byte slices receive the host payload unchanged, including JSON
-// quoting. Other data types use JSON decoding. Host collections bind to slices;
+// quoting; their custom UnmarshalJSON methods are not called. json.Number is a
+// numeric type, not raw text. Other types use JSON decoding with UseNumber, so
+// dynamic fields (any and map[string]any) retain exact numbers as json.Number.
+// Custom JSON decoders own their validation and numeric conversions.
+//
+// A named non-byte slice's UnmarshalJSON receives a JSON array for both JSON
+// payloads and host collections. In the latter, raw text elements are quoted,
+// raw bytes are base64 JSON strings, and structured elements stay JSON. The
+// custom batch decoder owns null handling and element validation. Matching raw
+// string/byte representations are not copied; treat incoming bytes as read-only.
+// Host collections bind to slices;
 // Cardinality "many" must be explicitly requested when the extension supports
 // batching. SDK clients, HTTP, and trigger-specific execution protocols require
 // their existing adapters. This method does not select a ClientFactory.
@@ -57,14 +68,10 @@ func validateGenericHandler(f any, cardinality string) {
 	if pt.Implements(reflect.TypeFor[context.Context]()) || pt.Implements(reflect.TypeFor[http.ResponseWriter]()) {
 		fail("payload must be data, not a context or HTTP response writer")
 	}
-	seenPointers := make(map[reflect.Type]bool)
-	for pt.Kind() == reflect.Ptr {
-		if seenPointers[pt] {
-			fail("payload cannot be a recursive pointer type")
-		}
-		seenPointers[pt] = true
-		pt = pt.Elem()
+	if err := bindingtype.Validate(pt); err != nil {
+		fail(err.Error())
 	}
+	pt, _ = bindingtype.Base(pt) // Validate already checked all pointer chains.
 	switch pt.Kind() {
 	case reflect.String, reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
@@ -116,23 +123,36 @@ func validateGenericRegistration(rf *RegisteredFunction) {
 		if b.Direction != "in" && !isReturn {
 			fail("only input and $return output bindings are supported")
 		}
-		if _, err := json.Marshal(b); err != nil {
+		snapshot, err := snapshotBinding(*b)
+		if err != nil {
 			fail(err.Error())
 		}
-		if g := b.GenericBinding; g != nil {
-			// Preserve large integer configuration values while breaking every
-			// caller-owned map/slice alias, including nested values.
-			data, err := json.Marshal(g.Properties)
-			if err != nil {
-				fail(err.Error())
-			}
-			var properties map[string]any
-			decoder := json.NewDecoder(bytes.NewReader(data))
-			decoder.UseNumber()
-			if err := decoder.Decode(&properties); err != nil {
-				fail(err.Error())
-			}
-			b.GenericBinding = &bindings.GenericBinding{DataType: g.DataType, Cardinality: g.Cardinality, Properties: properties}
-		}
+		*b = snapshot
 	}
+}
+
+// snapshotBinding validates serialization once and reuses those exact bytes to
+// snapshot generic properties. Custom marshalers run once, and large numbers
+// and nested values survive without retaining caller-owned maps or slices.
+func snapshotBinding(b bindings.Binding) (bindings.Binding, error) {
+	data, err := json.Marshal(b)
+	if err != nil {
+		return bindings.Binding{}, err
+	}
+	if b.GenericBinding == nil {
+		return b, nil
+	}
+	var properties map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&properties); err != nil {
+		return bindings.Binding{}, err
+	}
+	for _, key := range []string{"name", "type", "direction", "dataType", "cardinality"} {
+		delete(properties, key)
+	}
+	g := *b.GenericBinding
+	g.Properties = properties
+	b.GenericBinding = &g
+	return b, nil
 }

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -503,10 +504,18 @@ func encodeReturnValue(v any) (data *pb.TypedData, err error) {
 		return &pb.TypedData{Data: &pb.TypedData_String_{String_: val}}, nil
 	case []byte:
 		return &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: val}}, nil
+	case json.Number:
+		b, err := json.Marshal(val)
+		if err != nil {
+			return nil, fmt.Errorf("encode return value: %w", err)
+		}
+		return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(b)}}, nil
 	default:
-		// Preserve defined string/byte types too, but honor explicit JSON
-		// marshalers such as json.RawMessage before considering their kind.
-		if _, marshaler := v.(json.Marshaler); !marshaler {
+		// Preserve encoding/json's JSON and text marshaler precedence before
+		// treating a defined string/byte type as a raw value.
+		_, jsonMarshaler := v.(json.Marshaler)
+		_, textMarshaler := v.(encoding.TextMarshaler)
+		if !jsonMarshaler && !textMarshaler {
 			rv := reflect.ValueOf(v)
 			if rv.Kind() == reflect.String {
 				return &pb.TypedData{Data: &pb.TypedData_String_{String_: rv.String()}}, nil

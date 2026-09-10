@@ -105,7 +105,21 @@ No generic Go declaration installs a missing host extension.
   Treat registered metadata as immutable.
 - Handlers take `(context.Context, T)` and return `error` or `(R, error)`.
   Text and byte slices preserve the payload, including JSON quoting. Other
-  types use JSON decoding. Pointer models can receive JSON null.
+  types use JSON decoding. Pointer models can receive JSON null. Matching
+  string/byte representations avoid payload-sized copies; treat input bytes
+  as read-only.
+- Dynamic JSON fields (`any`, `map[string]any`, and nested interface fields)
+  receive numbers as `json.Number`, not `float64`. Use `Int64`, `Float64`, or
+  `String` explicitly. For example, an ID of `9007199254740993` remains exact.
+  Typed numeric fields retain their declared Go type. A host-supplied double
+  already has floating-point precision; it cannot recover lost source digits.
+- Raw string/byte types bypass custom `UnmarshalJSON`; `json.Number` is treated
+  as a number, not raw text. For other types, custom JSON decoders take control.
+  A custom named-slice decoder receives a JSON array even for a native host
+  collection. Raw text elements become JSON strings, raw byte elements become
+  base64 JSON strings, and structured elements remain JSON. The custom batch
+  decoder owns null handling, element validation, and its own number policy.
+  Return encoding honors both `json.Marshaler` and `encoding.TextMarshaler`.
 - Host collections decode element by element into slices, preserving empty
   entries. An ordinary JSON array does not automatically request host batching.
 - `TriggerMetadataValues` preserves primitive values, primitive collections,

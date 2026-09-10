@@ -75,7 +75,7 @@ jobs:
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
-        gotestsum --junitfile $(Build.SourcesDirectory)/test-results.xml -- -coverprofile=$(Build.SourcesDirectory)/coverage.out -covermode=atomic -coverpkg=./worker/...,./sdk/... ./worker/... ./sdk/...
+        gotestsum --junitfile $(Build.SourcesDirectory)/test-results.xml -- -coverprofile=$(Build.SourcesDirectory)/coverage.out -covermode=atomic -coverpkg=./worker/...,./sdk/...,./internal/bindingtype ./worker/... ./sdk/... ./internal/bindingtype
       displayName: 'Run unit tests'
 
     - script: go test ./samples/genericTriggers/...

@@ -69,6 +69,9 @@ func TestGenericTriggerRejectsInvalidRegistration(t *testing.T) {
 		{name: "too many results", fn: func(context.Context, []byte) (string, int, error) { return "", 0, nil }, want: "error"},
 		{name: "channel payload", fn: func(context.Context, chan int) error { return nil }, want: "payload"},
 		{name: "recursive pointer", fn: func(context.Context, recursiveGenericPointer) error { return nil }, want: "recursive"},
+		{name: "recursive batch element", fn: func(context.Context, []recursiveGenericPointer) error { return nil }, want: "recursive"},
+		{name: "recursive map value", fn: func(context.Context, map[string]recursiveGenericPointer) error { return nil }, want: "recursive"},
+		{name: "recursive struct field", fn: func(context.Context, struct{ Value recursiveGenericPointer }) error { return nil }, want: "recursive"},
 		{name: "post option invalid", fn: valid, opts: []Option{func(rf *RegisteredFunction) { rf.RawBindings[0].GenericBinding.Properties["type"] = "override" }}, want: "reserved"},
 		{name: "named output", fn: valid, opts: []Option{func(rf *RegisteredFunction) {
 			rf.RawBindings = append(rf.RawBindings, bindings.Binding{Name: "other", Type: "queue", Direction: "out"})
@@ -94,4 +97,36 @@ func TestGenericTriggerRejectsInvalidRegistration(t *testing.T) {
 			app.GenericTrigger("Invalid", tt.fn, trigger, tt.opts...)
 		})
 	}
+}
+
+type countingGenericProperty struct{ calls *int }
+
+func (p countingGenericProperty) MarshalJSON() ([]byte, error) {
+	*p.calls++
+	return []byte(`{"id":9007199254740993}`), nil
+}
+
+func TestGenericRegistrationMarshalsPropertiesOnce(t *testing.T) {
+	calls := 0
+	app := FunctionApp()
+	rf := app.GenericTrigger("Once", func(context.Context, []byte) error { return nil }, &bindings.GenericTrigger{
+		Type: "customTrigger", Name: "message", Properties: map[string]any{"nested": countingGenericProperty{&calls}},
+	})
+	if calls != 1 {
+		t.Fatalf("property marshaled %d times during registration, want 1", calls)
+	}
+	data, err := json.Marshal(rf.RawBindings[0])
+	if err != nil || !strings.Contains(string(data), `"nested":{"id":9007199254740993}`) || calls != 1 {
+		t.Fatalf("snapshot=%s error=%v calls=%d", data, err, calls)
+	}
+}
+
+func TestGenericRegistrationAllowsRecursiveModels(t *testing.T) {
+	type Node struct {
+		Next     *Node   `json:"next"`
+		Children []*Node `json:"children"`
+	}
+	FunctionApp().GenericTrigger("Nodes", func(context.Context, []Node) error { return nil }, &bindings.GenericTrigger{
+		Type: "customTrigger", Name: "nodes", Cardinality: "many",
+	})
 }
