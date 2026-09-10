@@ -232,6 +232,22 @@ wg.Wait()
 
 The worker emits structured logs and distributed traces with minimal setup.
 
+### Dependency metadata
+
+During initialization, the worker reports the dependency module names and
+versions embedded in your compiled application to the Functions host. This
+includes private and transitive modules and dependencies brought in by the
+worker SDK. The inventory is sent as worker metadata, not as an application log
+or an OpenTelemetry record. It does not require Application Insights.
+
+The worker reads Go build metadata without scanning source files or making
+network requests. The inventory omits local replacement directories and does
+not add application paths, checksums, or build settings. Existing SDK replacement
+and VCS metadata fields are unchanged.
+
+See [Dependency metadata](docs/concepts/dependency-metadata.md) for the schema,
+replacement handling, limits, and interpretation.
+
 ### Structured logging
 
 The SDK installs an [`slog`](https://pkg.go.dev/log/slog) handler at package init that routes every record over the gRPC log channel back to the host. Each entry automatically carries `invocation_id`, `function_name`, and `trigger_type`, so logs in Application Insights are correlated to the right invocation without any user wiring:

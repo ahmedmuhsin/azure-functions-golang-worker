@@ -36,32 +36,45 @@ const (
 	// (vcs.revision). Empty when the build did not include VCS info
 	// (e.g. -buildvcs=false or builds outside a VCS root).
 	MetaAppVCSRevision = "app_vcs_revision"
+
+	// MetaAppDependencies contains a bounded, versioned JSON inventory of the
+	// dependency modules embedded in the application binary. It includes private
+	// and transitive module identities, but not local replacement directories.
+	MetaAppDependencies = "app_dependencies"
 )
 
 // buildWorkerMetadata constructs the WorkerMetadata reported in
-// WorkerInitResponse and FunctionEnvironmentReloadResponse. The four
-// custom-property keys are always present (with "false"/empty defaults)
-// so consumers can query for them unconditionally without null-handling.
+// WorkerInitResponse and FunctionEnvironmentReloadResponse. Custom properties
+// are always present, including an unavailable inventory when build information
+// cannot be read.
 //
 // The SDK version is read from the user app's BuildInfo dependency tree;
 // it is "(devel)" when the app is built outside a release-tag commit, or
 // "(replaced)" when a `replace` directive points the SDK at a
 // versionless local path.
 func buildWorkerMetadata() *pb.WorkerMetadata {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		bi = nil
+	}
+	return buildWorkerMetadataFromBuildInfo(bi)
+}
+
+func buildWorkerMetadataFromBuildInfo(bi *debug.BuildInfo) *pb.WorkerMetadata {
 	md := &pb.WorkerMetadata{
 		RuntimeName:    "go",
 		RuntimeVersion: runtime.Version(),
 		WorkerBitness:  runtime.GOOS + "/" + runtime.GOARCH,
 		CustomProperties: map[string]string{
-			MetaSDKReplaced:    "false",
-			MetaSDKReplacePath: "",
-			MetaAppBuiltDirty:  "false",
-			MetaAppVCSRevision: "",
+			MetaSDKReplaced:     "false",
+			MetaSDKReplacePath:  "",
+			MetaAppBuiltDirty:   "false",
+			MetaAppVCSRevision:  "",
+			MetaAppDependencies: buildDependencyInventory(bi),
 		},
 	}
 
-	bi, ok := debug.ReadBuildInfo()
-	if !ok {
+	if bi == nil {
 		return md
 	}
 
