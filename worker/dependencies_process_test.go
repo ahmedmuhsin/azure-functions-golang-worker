@@ -85,8 +85,8 @@ func buildInventoryExecutable(t *testing.T, pkg string, flags []string) string {
 		files := map[string][]byte{
 			"main.go":              fixture,
 			"go.sum":               sums,
-			"go.mod":               []byte(fmt.Sprintf("module inventory-test-app\n\ngo 1.25.0\n\nrequire (\n%s v0.0.0\nprivate.example/inventory/customer v1.2.3\n)\n\nreplace %s => %q\nreplace private.example/inventory/customer => ./customer\n", sdkModulePath, sdkModulePath, filepath.ToSlash(root))),
-			"customer/go.mod":      []byte("module private.example/inventory/customer\n\ngo 1.25.0\n"),
+			"go.mod":               []byte(fmt.Sprintf("module inventory-test-app\n\ngo 1.24.0\n\nrequire (\n%s v0.0.0\nprivate.example/inventory/customer v1.2.3\n)\n\nreplace %s => %q\nreplace private.example/inventory/customer => ./customer\n", sdkModulePath, sdkModulePath, filepath.ToSlash(root))),
+			"customer/go.mod":      []byte("module private.example/inventory/customer\n\ngo 1.24.0\n"),
 			"customer/customer.go": []byte("package customer\n"),
 		}
 		for path, data := range files {
