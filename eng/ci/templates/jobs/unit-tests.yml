@@ -95,6 +95,10 @@ jobs:
       displayName: 'Test middleware/durabletask'
 
     - script: |
+        cd tests/integration && GOWORK=off go test -mod=readonly ./cmd/integrationtest
+      displayName: 'Test integration scenario selection'
+
+    - script: |
         cd tests/integration/testdata/durableFunctions && GOWORK=off go test -mod=readonly ./...
       displayName: 'Test Durable integration fixture'
 
