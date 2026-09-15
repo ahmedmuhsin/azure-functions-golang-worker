@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // Decode into independent wire types so changes to the producer's schema do not
@@ -39,9 +40,6 @@ func readInventory(t *testing.T, md *pb.WorkerMetadata) inventoryWire {
 	if !ok {
 		t.Fatal("WorkerMetadata is missing app_dependencies")
 	}
-	if len(raw) > 8*1024 {
-		t.Fatalf("inventory is %d bytes, exceeds 8 KiB", len(raw))
-	}
 	var result inventoryWire
 	d := json.NewDecoder(strings.NewReader(raw))
 	d.DisallowUnknownFields()
@@ -51,7 +49,7 @@ func readInventory(t *testing.T, md *pb.WorkerMetadata) inventoryWire {
 	if result.SchemaVersion != 1 || result.Modules == nil {
 		t.Fatalf("invalid inventory envelope: %+v", result)
 	}
-	if result.Reported != len(result.Modules) || result.Total < result.Reported || result.Truncated != (result.Reported < result.Total) {
+	if result.Reported != len(result.Modules) || result.Total != result.Reported || result.Truncated {
 		t.Fatalf("inconsistent inventory counts: %+v", result)
 	}
 	return result
@@ -123,23 +121,42 @@ func TestDependencyMetadataUnavailableAndEmpty(t *testing.T) {
 	}
 }
 
-func TestDependencyMetadataDeterministicAndBounded(t *testing.T) {
+func TestDependencyMetadataDeterministicAndComplete(t *testing.T) {
 	bi := &debug.BuildInfo{}
 	for i := 0; i < 1000; i++ {
 		bi.Deps = append(bi.Deps, &debug.Module{Path: fmt.Sprintf("private.example/module%04d", i), Version: "v1.0.0"})
 	}
 	md := buildWorkerMetadataFromBuildInfo(bi)
 	got := readInventory(t, md)
-	if got.Total != 1000 || !got.Truncated || got.Reported == 0 {
-		t.Fatalf("expected bounded nonempty prefix: %+v", got)
+	if got.Total != 1000 || got.Reported != 1000 || got.Truncated {
+		t.Fatalf("expected all 1000 modules: %+v", got)
 	}
-	// The first record that was omitted must not fit. This catches wasteful
-	// truncation and byte/count errors around the JSON envelope.
-	got.Modules = append(got.Modules, moduleWire{Path: fmt.Sprintf("private.example/module%04d", got.Reported), Version: "v1.0.0"})
-	got.Reported++
-	encoded, err := json.Marshal(got)
-	if err != nil || len(encoded) <= 8*1024 {
-		t.Fatalf("next record should exceed the byte limit: bytes=%d err=%v", len(encoded), err)
+	if len(md.CustomProperties[MetaAppDependencies]) <= 8*1024 {
+		t.Fatal("fixture must exceed the former 8 KiB limit")
+	}
+	for i, module := range got.Modules {
+		want := moduleWire{Path: fmt.Sprintf("private.example/module%04d", i), Version: "v1.0.0"}
+		if !reflect.DeepEqual(module, want) {
+			t.Fatalf("module %d = %+v, want %+v", i, module, want)
+		}
+	}
+	// The full inventory must survive serialization of both lifecycle messages.
+	// This does not assert that downstream telemetry stores accept the same size.
+	for _, message := range []*pb.StreamingMessage{
+		{Content: &pb.StreamingMessage_WorkerInitResponse{WorkerInitResponse: &pb.WorkerInitResponse{WorkerMetadata: md}}},
+		{Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{WorkerMetadata: md}}},
+	} {
+		encoded, err := proto.Marshal(message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded pb.StreamingMessage
+		if err := proto.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if !proto.Equal(message, &decoded) {
+			t.Fatal("large lifecycle metadata changed during protobuf round trip")
+		}
 	}
 	for i, j := 0, len(bi.Deps)-1; i < j; i, j = i+1, j-1 {
 		bi.Deps[i], bi.Deps[j] = bi.Deps[j], bi.Deps[i]
@@ -153,9 +170,14 @@ func TestDependencyMetadataDeterministicAndBounded(t *testing.T) {
 func TestDependencyMetadataEscapingAndLargeEntry(t *testing.T) {
 	for _, path := range []string{strings.Repeat("界", 3000), strings.Repeat("\"\\\n", 2000), strings.Repeat("<>&", 2000)} {
 		bi := &debug.BuildInfo{Deps: []*debug.Module{{Path: "a.example/" + path, Version: "v1.0.0"}, {Path: "z.example/small", Version: "v1.0.0"}}}
-		got := readInventory(t, buildWorkerMetadataFromBuildInfo(bi))
-		if !got.Truncated || got.Reported != 0 || got.Total != 2 {
-			t.Fatalf("oversized first entry should produce an empty truncated prefix: %+v", got)
+		md := buildWorkerMetadataFromBuildInfo(bi)
+		got := readInventory(t, md)
+		want := []moduleWire{{Path: "a.example/" + path, Version: "v1.0.0"}, {Path: "z.example/small", Version: "v1.0.0"}}
+		if !reflect.DeepEqual(got.Modules, want) {
+			t.Fatal("large or escaped module identity was omitted or altered")
+		}
+		if len(md.CustomProperties[MetaAppDependencies]) <= 8*1024 {
+			t.Fatal("escaped fixture must exceed the former 8 KiB limit")
 		}
 	}
 }
@@ -182,7 +204,7 @@ func TestDependencyMetadataIdentityAndReplacement(t *testing.T) {
 	readInventory(t, buildWorkerMetadataFromBuildInfo(bi))
 }
 
-func TestDependencyMetadataExactByteBoundary(t *testing.T) {
+func TestDependencyMetadataFormerByteBoundary(t *testing.T) {
 	// Determine the one-record envelope length independently of the producer.
 	wire := inventoryWire{SchemaVersion: 1, Status: "available", Total: 1, Reported: 1,
 		Modules: []moduleWire{{Path: "example.org/", Version: "v1.0.0"}}}
@@ -190,13 +212,17 @@ func TestDependencyMetadataExactByteBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, extra := range []int{0, 1} {
+	for _, extra := range []int{-1, 0, 1} {
 		path := "example.org/" + strings.Repeat("x", 8*1024-len(base)+extra)
-		got := readInventory(t, buildWorkerMetadataFromBuildInfo(&debug.BuildInfo{
+		md := buildWorkerMetadataFromBuildInfo(&debug.BuildInfo{
 			Deps: []*debug.Module{{Path: path, Version: "v1.0.0"}},
-		}))
-		if got.Reported != 1-extra || got.Truncated != (extra == 1) {
+		})
+		got := readInventory(t, md)
+		if got.Reported != 1 || got.Truncated || got.Modules[0].Path != path {
 			t.Fatalf("boundary+%d: %+v", extra, got)
+		}
+		if size := len(md.CustomProperties[MetaAppDependencies]); size != 8*1024+extra {
+			t.Fatalf("boundary+%d: inventory bytes = %d", extra, size)
 		}
 	}
 }

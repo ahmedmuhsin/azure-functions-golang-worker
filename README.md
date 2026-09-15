@@ -240,6 +240,10 @@ includes private and transitive modules and dependencies brought in by the
 worker SDK. The inventory is sent as worker metadata, not as an application log
 or an OpenTelemetry record. It does not require Application Insights.
 
+The worker does not impose an inventory size cap. Host transport and telemetry
+ingestion limits still apply, so large inventories may be rejected or truncated
+downstream.
+
 The worker reads Go build metadata without scanning source files or making
 network requests. The inventory omits local replacement directories and does
 not add application paths, checksums, or build settings. Existing SDK replacement

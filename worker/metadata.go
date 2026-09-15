@@ -37,7 +37,7 @@ const (
 	// (e.g. -buildvcs=false or builds outside a VCS root).
 	MetaAppVCSRevision = "app_vcs_revision"
 
-	// MetaAppDependencies contains a bounded, versioned JSON inventory of the
+	// MetaAppDependencies contains a versioned JSON inventory of the
 	// dependency modules embedded in the application binary. It includes private
 	// and transitive module identities, but not local replacement directories.
 	MetaAppDependencies = "app_dependencies"

@@ -38,11 +38,12 @@ The property is a JSON string. Its decoded value looks like this:
 - `status` is `available` when Go build information is present, otherwise
   `unavailable`. An unavailable inventory has zero counts and an empty array.
   An available empty inventory is not the same as unavailable metadata.
-- `total` is the number of distinct normalized records before truncation.
+- `total` is the number of distinct normalized records.
   Empty module paths and nil entries are ignored. Identical records are
   deduplicated; different recorded versions or replacements remain distinct.
-- `reported` is the number of records in `modules`.
-- `truncated` is true if any counted records were omitted due to the byte limit.
+- `reported` is the number of records in `modules`, equal to `total`.
+- `truncated` is retained for schema compatibility and is always false. It
+  describes the worker's output, not whether downstream ingestion preserved it.
 - Without `replacement`, `version` is the version recorded by Go. It is omitted
   if empty and may be `(devel)` for development builds.
 - A nonempty `replacement` identifies the effective versioned replacement.
@@ -53,13 +54,12 @@ The property is a JSON string. Its decoded value looks like this:
   pin does not describe the code built from that directory. Both empty and
   `(devel)` replacement versions are treated this way.
 
-Records are sorted by their serialized JSON representation, then a prefix is
-selected to keep the complete property at or below 8,192 UTF-8 bytes. Records
-are never split. A single oversized first record can therefore produce an
-empty, truncated inventory. Counts and the envelope are included in this
-limit. Additional escaping in host serialization and the rest of
-`WorkerMetadata` are not included, so this is not a guarantee about downstream
-ingestion limits.
+Records are sorted by their serialized JSON representation. The worker sends
+all normalized records without an inventory byte or module-count cap. Larger
+inventories increase serialization work and telemetry payload size. Host
+transport and downstream telemetry limits still apply and may reject or
+truncate the entire metadata event. The worker does not detect downstream
+data loss or split the inventory into multiple events.
 
 ## Collection and interpretation
 

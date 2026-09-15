@@ -6,10 +6,6 @@ import (
 	"slices"
 )
 
-// This bounds the UTF-8 JSON property itself, not the enclosing protobuf/JSON
-// message. Host ingestion limits must also account for the other metadata.
-const dependencyInventoryMaxBytes = 8 * 1024
-
 type dependencyModule struct {
 	Path        string                 `json:"path"`
 	Version     string                 `json:"version,omitempty"`
@@ -66,25 +62,10 @@ func buildDependencyInventory(bi *debug.BuildInfo) string {
 	slices.Sort(entries)
 	entries = slices.Compact(entries)
 	inventory.Total = len(entries)
-	inventory.Truncated = inventory.Total > 0
-
-	// Measure each candidate prefix using its exact envelope (including count
-	// digit changes and JSON escapes). Keep Modules empty until the final encode
-	// so we do not repeatedly marshal an increasingly large array.
-	entryBytes := 0
-	for i, entry := range entries {
-		candidate := inventory
-		candidate.Reported = i + 1
-		candidate.Truncated = candidate.Reported < candidate.Total
-		envelope, _ := json.Marshal(candidate)
-		if len(envelope)+entryBytes+len(entry)+i > dependencyInventoryMaxBytes {
-			break
-		}
-		entryBytes += len(entry)
-		inventory.Reported = candidate.Reported
-		inventory.Truncated = candidate.Truncated
-	}
-	for _, entry := range entries[:inventory.Reported] {
+	inventory.Reported = inventory.Total
+	// Keep the schema's reported/truncated fields, but do not truncate locally.
+	// Host transport and telemetry limits may still reject or truncate an event.
+	for _, entry := range entries {
 		inventory.Modules = append(inventory.Modules, json.RawMessage(entry))
 	}
 	encoded, _ := json.Marshal(inventory)
