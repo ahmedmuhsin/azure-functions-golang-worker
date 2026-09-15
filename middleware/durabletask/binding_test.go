@@ -197,8 +197,13 @@ func TestDurable_ClientBinding_EndToEnd(t *testing.T) {
 		t.Error("expected the binding client to be reused across invocations")
 	}
 
-	// Shutdown closes the cached binding client.
-	if err := d.Shutdown(context.Background()); err != nil {
+	// Installing the extension retains SDK-owned shutdown of the cached client.
+	app := sdk.FunctionApp()
+	app.Use(d)
+	if err := app.RunShutdowns(context.Background()); err != nil {
 		t.Errorf("shutdown: %v", err)
+	}
+	if err := client.conn.Close(); err == nil {
+		t.Error("SDK shutdown did not close the owned connection")
 	}
 }
