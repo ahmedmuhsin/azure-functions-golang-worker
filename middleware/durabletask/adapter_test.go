@@ -84,6 +84,77 @@ func TestRegisteredAdapter_PreservesMiddlewareInput(t *testing.T) {
 	}
 }
 
+func TestRegisteredAdapter_InputContext(t *testing.T) {
+	var received string
+	d := Middleware(WithOrchestrator("Echo", func(ctx *task.OrchestrationContext) (any, error) {
+		if err := ctx.GetInput(&received); err != nil {
+			return nil, err
+		}
+		return received, nil
+	}))
+	be, client := newEmulatorBackend(t)
+	original := scheduleAndEncodeRequest(t, be, client, "Echo", "original")
+	replacement := scheduleAndEncodeRequest(t, be, client, "Echo", "replacement")
+	adapter := d.provided[0].Func.(func(context.Context, string) (string, error))
+	for _, tc := range []struct {
+		name    string
+		derive  func(context.Context, *sdk.MiddlewareContext) context.Context
+		want    string
+		wantErr string
+	}{
+		{"preserved", func(ctx context.Context, _ *sdk.MiddlewareContext) context.Context { return ctx }, "replacement", ""},
+		{"without cancellation", func(ctx context.Context, _ *sdk.MiddlewareContext) context.Context {
+			return context.WithoutCancel(ctx)
+		}, "replacement", ""},
+		{"reattached to fresh context", func(_ context.Context, mc *sdk.MiddlewareContext) context.Context {
+			return sdk.ContextWithMiddleware(context.Background(), mc)
+		}, "replacement", ""},
+		// Discarding or shadowing the carrier is not input preservation. Pin the
+		// documented boundary rather than silently promising general rebinding.
+		{"discarded carrier uses bound input", func(context.Context, *sdk.MiddlewareContext) context.Context {
+			return context.Background()
+		}, "original", ""},
+		{"fresh carrier has no input", func(ctx context.Context, mc *sdk.MiddlewareContext) context.Context {
+			return sdk.NewContext(ctx, mc.InvocationContext)
+		}, "", "without history"},
+	} {
+		for _, durableFirst := range []bool{true, false} {
+			t.Run(tc.name+"/"+durableOrderName(durableFirst), func(t *testing.T) {
+				received = ""
+				app := sdk.FunctionApp()
+				if durableFirst {
+					app.Use(d)
+				}
+				app.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
+					return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
+						mc.SetInputString(replacement)
+						return next(tc.derive(ctx, mc), mc)
+					}
+				}))
+				if !durableFirst {
+					app.Use(d)
+				}
+				mc := &sdk.MiddlewareContext{InvocationContext: &sdk.InvocationContext{TriggerType: string(OrchestrationTriggerType)}}
+				mc.SetInputString(original)
+				err := app.Compose(func(ctx context.Context, _ *sdk.MiddlewareContext) error {
+					_, err := adapter(ctx, original)
+					return err
+				})(sdk.ContextWithMiddleware(context.Background(), mc), mc)
+				if tc.wantErr != "" {
+					if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+						t.Fatalf("error = %v, want %q", err, tc.wantErr)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if received != tc.want {
+					t.Fatalf("replayed input = %q, want %q", received, tc.want)
+				}
+			})
+		}
+	}
+}
+
 func TestRegisteredAdapter_InputSource(t *testing.T) {
 	d := Middleware(WithOrchestrator("HelloCities", helloCities))
 	be, client := newEmulatorBackend(t)

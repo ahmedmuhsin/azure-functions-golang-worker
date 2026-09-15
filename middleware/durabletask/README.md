@@ -164,6 +164,12 @@ result is authoritative, even when it is empty or malformed; the runner validate
 that result rather than falling back to the bound argument. Direct adapter calls
 without a carrier use their explicit argument.
 
+Middleware must preserve the invocation carrier when passing a context to `next`.
+Derive it from the supplied `ctx` (including `context.WithoutCancel` when needed),
+or explicitly attach `mc` with `sdk.ContextWithMiddleware`. A fresh
+`context.Background()` drops the carrier, while `sdk.NewContext` creates a new,
+empty carrier. Neither preserves late input changes by itself.
+
 This is Durable-specific compatibility, not a general rebinding feature for
 ordinary functions. It preserves the existing string/byte accessor semantics;
 it does not change cross-representation cache invalidation. For example, clearing
