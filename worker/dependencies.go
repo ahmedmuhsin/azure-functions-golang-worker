@@ -35,6 +35,7 @@ func buildDependencyInventory(bi *debug.BuildInfo) string {
 	}
 	if bi != nil {
 		inventory.Status = "available"
+		inventory.Modules = make([]json.RawMessage, 0, len(bi.Deps))
 		for _, dep := range bi.Deps {
 			if dep == nil || dep.Path == "" {
 				continue
