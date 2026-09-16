@@ -14,12 +14,21 @@ limits depend on the host and platform configuration.
 
 ## Collection lifetime and binary size
 
-Build metadata and executable size are collected once, on the first metadata
-request within the application process. The startup log also uses this metadata
-builder. Later initialization and environment-reload responses reuse the
-snapshot. Each response receives its own protobuf and property map, so changing
-one response cannot modify another. Unavailable values are cached too; a new
-process gets a new snapshot.
+Build metadata and executable size are collected once when `worker.Start()`
+first builds metadata for the startup log, before handling metadata requests.
+The startup log does not include the dependency inventory or binary size.
+
+Initialization and environment-reload responses each send the cached snapshot.
+Function invocations and status requests do not send it. Caching avoids repeated
+collection, not retransmission on later initialization or reload requests.
+Each new app process, including a restart or scale-out process, collects its own
+snapshot and reports it during initialization. On Flex, the proxy forwards the
+child's snapshot in its specialization response instead of forwarding the
+child's initialization response as a second report to the host.
+
+Each response receives its own protobuf and property map, so changing one
+response cannot modify another. Unavailable values are cached too. Replacing
+the executable pathname after collection does not refresh the cached size.
 
 `WorkerMetadata.CustomProperties["app_binary_size_bytes"]` contains the executing
 application file's logical length as a decimal byte count. This is the size of
