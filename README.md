@@ -249,6 +249,11 @@ network requests. The inventory omits local replacement directories and does
 not add application paths, checksums, or build settings. Existing SDK replacement
 and VCS metadata fields are unchanged.
 
+The worker also reports the executable's logical file size in bytes as
+`app_binary_size_bytes`, or an empty value when unavailable. Build metadata and
+binary size are collected once per app process and reused in later metadata
+responses. This size is not process memory usage or deployment ZIP size.
+
 See [Dependency metadata](docs/concepts/dependency-metadata.md) for the schema,
 replacement handling, limits, and interpretation.
 

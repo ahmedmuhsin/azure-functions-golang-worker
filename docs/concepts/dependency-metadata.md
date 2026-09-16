@@ -12,6 +12,32 @@ The Functions host source records worker metadata under the system metric
 application logs and OpenTelemetry export. Delivery, retention, and ingestion
 limits depend on the host and platform configuration.
 
+## Collection lifetime and binary size
+
+Build metadata and executable size are collected once, on the first metadata
+request within the application process. The startup log also uses this metadata
+builder. Later initialization and environment-reload responses reuse the
+snapshot. Each response receives its own protobuf and property map, so changing
+one response cannot modify another. Unavailable values are cached too; a new
+process gets a new snapshot.
+
+`WorkerMetadata.CustomProperties["app_binary_size_bytes"]` contains the executing
+application file's logical length as a decimal byte count. This is the size of
+the actual executable, whether built normally or stripped. It is not resident
+memory usage, filesystem allocation, or compressed deployment-package size.
+An empty string means unavailable; it must not be interpreted as zero.
+
+On Linux, the worker stats `/proc/self/exe` directly so it measures the executing
+file even if its pathname was replaced or unlinked. On other operating systems,
+it stats the path returned by `os.Executable()` on a best-effort basis. If lookup
+fails or the target is not a regular file, size is unavailable and initialization
+continues. This property does not include executable paths or filesystem errors.
+Size is collected independently of embedded build-info availability.
+
+The application, not the Flex placeholder proxy, collects its size. The proxy
+forwards the child's metadata during specialization. No binary-size field is
+added to the existing customer-facing startup log.
+
 ## Schema version 1
 
 The property is a JSON string. Its decoded value looks like this:

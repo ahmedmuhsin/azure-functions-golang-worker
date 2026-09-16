@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"encoding/json"
 	"runtime/debug"
 	"slices"
@@ -32,7 +33,6 @@ func buildDependencyInventory(bi *debug.BuildInfo) string {
 		Status:        "unavailable",
 		Modules:       []json.RawMessage{},
 	}
-	var entries []string
 	if bi != nil {
 		inventory.Status = "available"
 		for _, dep := range bi.Deps {
@@ -54,20 +54,17 @@ func buildDependencyInventory(bi *debug.BuildInfo) string {
 			// Only strings and a nonrecursive struct are serialized here, so
 			// Marshal cannot encounter unsupported types or reference cycles.
 			encoded, _ := json.Marshal(module)
-			entries = append(entries, string(encoded))
+			inventory.Modules = append(inventory.Modules, json.RawMessage(encoded))
 		}
 	}
 	// Sort and deduplicate the normalized records, not the caller's BuildInfo.
 	// Distinct versions/replacements for the same path remain separate records.
-	slices.Sort(entries)
-	entries = slices.Compact(entries)
-	inventory.Total = len(entries)
+	slices.SortFunc(inventory.Modules, func(a, b json.RawMessage) int { return bytes.Compare(a, b) })
+	inventory.Modules = slices.CompactFunc(inventory.Modules, func(a, b json.RawMessage) bool { return bytes.Equal(a, b) })
+	inventory.Total = len(inventory.Modules)
 	inventory.Reported = inventory.Total
 	// Keep the schema's reported/truncated fields, but do not truncate locally.
 	// Host transport and telemetry limits may still reject or truncate an event.
-	for _, entry := range entries {
-		inventory.Modules = append(inventory.Modules, json.RawMessage(entry))
-	}
 	encoded, _ := json.Marshal(inventory)
 	return string(encoded)
 }

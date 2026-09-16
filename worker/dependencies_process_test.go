@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 
 func TestDependencyInventoryCompiledProcess(t *testing.T) {
 	var baseline string
+	var normalSize int64
 	checkSame := func(t *testing.T, inventory string) {
 		t.Helper()
 		if baseline == "" {
@@ -43,16 +45,33 @@ func TestDependencyInventoryCompiledProcess(t *testing.T) {
 	} {
 		t.Run(variant.name, func(t *testing.T) {
 			app := buildInventoryExecutable(t, "./worker/testdata/dependencyinventory", variant.flags)
+			stat, err := os.Stat(app)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if variant.name == "normal" {
+				normalSize = stat.Size()
+			} else if stat.Size() == normalSize {
+				t.Fatal("normal and stripped app sizes must differ to discriminate the size assertions")
+			}
 			t.Run("direct", func(t *testing.T) {
-				checkSame(t, testInventoryProcess(t, app, app, false))
+				checkSame(t, testInventoryProcess(t, app, app, false, ""))
 			})
 			t.Run("flex_proxy", func(t *testing.T) {
 				if runtime.GOOS != "linux" {
 					t.Skip("Flex proxy uses syscall.Exec; its executable is tested only on Linux")
 				}
 				proxy := buildInventoryExecutable(t, "./proxy", nil)
-				checkSame(t, testInventoryProcess(t, proxy, app, true))
+				checkSame(t, testInventoryProcess(t, proxy, app, true, ""))
 			})
+			for _, mutation := range []string{"replace", "unlink"} {
+				t.Run("direct_"+mutation, func(t *testing.T) {
+					if runtime.GOOS != "linux" {
+						t.Skip("mutating a running executable is tested only on Linux")
+					}
+					checkSame(t, testInventoryProcess(t, app, app, false, mutation))
+				})
+			}
 		})
 	}
 }
@@ -148,8 +167,44 @@ func (h *inventoryProcessHost) EventStream(stream pb.FunctionRpc_EventStreamServ
 	}
 }
 
-func testInventoryProcess(t *testing.T, executable, app string, proxy bool) string {
+func testInventoryProcess(t *testing.T, executable, app string, proxy bool, mutation string) string {
 	t.Helper()
+	if mutation != "" {
+		if runtime.GOOS != "linux" || proxy {
+			t.Fatal("executable mutation requires a direct Linux fixture")
+		}
+		// Never mutate the shared build or a caller-owned executable.
+		data, err := os.ReadFile(app)
+		if err != nil {
+			t.Fatal(err)
+		}
+		app = filepath.Join(t.TempDir(), filepath.Base(app))
+		if err := os.WriteFile(app, data, 0700); err != nil {
+			t.Fatal(err)
+		}
+		executable = app
+	}
+	// Load both oracles before the fixture can replace or unlink its pathname.
+	info, err := buildinfo.ReadFile(app)
+	if err != nil {
+		t.Fatalf("read executable build info: %v", err)
+	}
+	appStat, err := os.Stat(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !appStat.Mode().IsRegular() {
+		t.Fatal("fixture must be a regular executable")
+	}
+	if proxy {
+		proxyStat, err := os.Stat(executable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if proxyStat.Size() == appStat.Size() {
+			t.Fatal("app and proxy sizes must differ to discriminate which executable is reported")
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -184,6 +239,7 @@ func testInventoryProcess(t *testing.T, executable, app string, proxy bool) stri
 	cmd.Dir = filepath.Dir(app)
 	cmd.Env = append(os.Environ(),
 		"DEPENDENCY_INVENTORY_CONTROL="+control.Addr().String(),
+		"DEPENDENCY_INVENTORY_EXECUTABLE_MUTATION="+mutation,
 		"WEBSITE_PLACEHOLDER_MODE=1",
 		// Prevent the proxy's startup exec bypass from finding an existing app.
 		"FUNCTIONS_APP_BINARY_NAME=dependency-inventory-placeholder-does-not-exist")
@@ -239,6 +295,56 @@ func testInventoryProcess(t *testing.T, executable, app string, proxy bool) stri
 		}
 	}()
 
+	acceptFixture := func() {
+		t.Helper()
+		// Keep the control socket until cleanup so a proxy child can exit even
+		// if the proxy dies or gRPC teardown hangs.
+		child, err = control.Accept()
+		if err != nil {
+			t.Fatalf("fixture control connection: %v", err)
+		}
+		if err := child.SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fmt.Fscanln(bufio.NewReader(child), &pid); err != nil || pid <= 0 {
+			t.Fatalf("fixture PID: %d, error: %v", pid, err)
+		}
+		if (pid == cmd.Process.Pid) == proxy {
+			t.Fatalf("fixture PID = %d, launched PID = %d, proxy = %t", pid, cmd.Process.Pid, proxy)
+		}
+	}
+	if mutation != "" {
+		// The PID acknowledges mutation. The fixture waits for this control
+		// reply before worker.Start, including its first metadata read.
+		acceptFixture()
+		running, err := os.Stat(fmt.Sprintf("/proc/%d/exe", pid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(appStat, running) || running.Size() != appStat.Size() {
+			t.Fatal("/proc fixture executable no longer identifies the original inode and size")
+		}
+		switch mutation {
+		case "replace":
+			replacement, err := os.Stat(app)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !replacement.Mode().IsRegular() || os.SameFile(appStat, replacement) || replacement.Size() == appStat.Size() {
+				t.Fatal("replacement must be a different regular inode with a different size")
+			}
+		case "unlink":
+			if _, err := os.Stat(app); !os.IsNotExist(err) {
+				t.Fatalf("unlinked executable pathname: %v, want not-exist error", err)
+			}
+		default:
+			t.Fatalf("unknown executable mutation %q", mutation)
+		}
+		if _, err := child.Write([]byte{'S'}); err != nil {
+			t.Fatalf("release fixture startup: %v", err)
+		}
+	}
+
 	var stream pb.FunctionRpc_EventStreamServer
 	select {
 	case stream = <-host.connected:
@@ -288,6 +394,9 @@ func testInventoryProcess(t *testing.T, executable, app string, proxy bool) stri
 		if _, ok := metadata.GetCustomProperties()["app_dependencies"]; ok {
 			t.Fatal("placeholder must not advertise an app dependency inventory")
 		}
+		if _, ok := metadata.GetCustomProperties()["app_binary_size_bytes"]; ok {
+			t.Fatal("placeholder must not advertise an app binary size")
+		}
 		send(&pb.StreamingMessage{RequestId: "inventory-reload", Content: &pb.StreamingMessage_FunctionEnvironmentReloadRequest{
 			FunctionEnvironmentReloadRequest: &pb.FunctionEnvironmentReloadRequest{
 				FunctionAppDirectory: filepath.Dir(app),
@@ -299,20 +408,8 @@ func testInventoryProcess(t *testing.T, executable, app string, proxy bool) stri
 		}})
 	}
 
-	// The fixture connects before worker.Start. Keep its control socket until
-	// cleanup so it can exit even if the proxy dies or gRPC teardown hangs.
-	child, err = control.Accept()
-	if err != nil {
-		t.Fatalf("fixture control connection: %v", err)
-	}
-	if err := child.SetReadDeadline(deadline); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fmt.Fscanln(bufio.NewReader(child), &pid); err != nil || pid <= 0 {
-		t.Fatalf("fixture PID: %d, error: %v", pid, err)
-	}
-	if (pid == cmd.Process.Pid) == proxy {
-		t.Fatalf("fixture PID = %d, launched PID = %d, proxy = %t", pid, cmd.Process.Pid, proxy)
+	if child == nil {
+		acceptFixture()
 	}
 	if proxy {
 		reload := next("inventory-reload").GetFunctionEnvironmentReloadResponse()
@@ -321,16 +418,20 @@ func testInventoryProcess(t *testing.T, executable, app string, proxy bool) stri
 		}
 		metadata = reload.GetWorkerMetadata()
 	}
-	assertExecutableInventory(t, app, metadata)
-	if !proxy {
-		// Control responses use the worker startup request ID in the existing
-		// dispatcher. The proxy separately echoes its specialization request ID.
-		send(&pb.StreamingMessage{RequestId: "inventory-start", Content: &pb.StreamingMessage_FunctionEnvironmentReloadRequest{
-			FunctionEnvironmentReloadRequest: &pb.FunctionEnvironmentReloadRequest{},
-		}})
-		reload := next("inventory-start").GetFunctionEnvironmentReloadResponse()
-		if reload.GetWorkerMetadata().GetCustomProperties()["app_dependencies"] != metadata.GetCustomProperties()["app_dependencies"] {
-			t.Fatal("compiled app init and reload inventories differ")
+	assertExecutableInventory(t, info, appStat.Size(), metadata)
+	// Control responses use the worker startup request ID in the existing
+	// dispatcher. The proxy separately echoes its specialization request ID.
+	send(&pb.StreamingMessage{RequestId: "inventory-start", Content: &pb.StreamingMessage_FunctionEnvironmentReloadRequest{
+		FunctionEnvironmentReloadRequest: &pb.FunctionEnvironmentReloadRequest{},
+	}})
+	reload := next("inventory-start").GetFunctionEnvironmentReloadResponse()
+	if reload == nil || reload.GetResult() == nil || reload.GetResult().GetStatus() != pb.StatusResult_Success {
+		t.Fatalf("unsuccessful FunctionEnvironmentReloadResponse: %v", reload)
+	}
+	assertExecutableInventory(t, info, appStat.Size(), reload.GetWorkerMetadata())
+	for _, key := range []string{"app_dependencies", "app_binary_size_bytes"} {
+		if reload.GetWorkerMetadata().GetCustomProperties()[key] != metadata.GetCustomProperties()[key] {
+			t.Fatalf("compiled app init and reload %s differ", key)
 		}
 	}
 
@@ -351,7 +452,7 @@ func testInventoryProcess(t *testing.T, executable, app string, proxy bool) stri
 		if strings.Contains(log.GetMessage(), "Go worker started") {
 			startupSeen = true
 		}
-		for _, excluded := range []string{"app_dependencies", "private.example/inventory/customer", "golang.org/x/text", "schema_version"} {
+		for _, excluded := range []string{"app_dependencies", "app_binary_size_bytes", "private.example/inventory/customer", "golang.org/x/text", "schema_version"} {
 			if bytes.Contains(encoded, []byte(excluded)) {
 				t.Errorf("RpcLog contains inventory value %q: %s", excluded, encoded)
 			}
@@ -363,14 +464,13 @@ func testInventoryProcess(t *testing.T, executable, app string, proxy bool) stri
 	return metadata.GetCustomProperties()["app_dependencies"]
 }
 
-func assertExecutableInventory(t *testing.T, executable string, metadata *pb.WorkerMetadata) {
+func assertExecutableInventory(t *testing.T, info *buildinfo.BuildInfo, size int64, metadata *pb.WorkerMetadata) {
 	t.Helper()
 	if metadata == nil {
 		t.Fatal("response is missing WorkerMetadata")
 	}
-	info, err := buildinfo.ReadFile(executable)
-	if err != nil {
-		t.Fatalf("read executable build info: %v", err)
+	if got, want := metadata.GetCustomProperties()["app_binary_size_bytes"], strconv.FormatInt(size, 10); got != want {
+		t.Fatalf("app_binary_size_bytes = %q, want executable logical size %q", got, want)
 	}
 	got := readInventory(t, metadata)
 	if got.Status != "available" || got.Total != len(info.Deps) || got.Reported != len(info.Deps) || got.Truncated {

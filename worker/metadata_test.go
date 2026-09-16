@@ -32,6 +32,7 @@ func TestBuildWorkerMetadata_CustomPropertiesAlwaysPresent(t *testing.T) {
 		MetaAppBuiltDirty,
 		MetaAppVCSRevision,
 		MetaAppDependencies,
+		MetaAppBinarySizeBytes,
 	} {
 		if _, ok := md.CustomProperties[k]; !ok {
 			t.Errorf("CustomProperties missing key %q", k)

@@ -3,8 +3,10 @@ package worker
 import (
 	"runtime"
 	"runtime/debug"
+	"sync"
 
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // sdkModulePath is the canonical Go module path of this worker SDK. Used
@@ -41,7 +43,32 @@ const (
 	// dependency modules embedded in the application binary. It includes private
 	// and transitive module identities, but not local replacement directories.
 	MetaAppDependencies = "app_dependencies"
+
+	// MetaAppBinarySizeBytes is the executable file's logical length in bytes,
+	// captured at first metadata collection. Empty means unavailable, not zero.
+	MetaAppBinarySizeBytes = "app_binary_size_bytes"
 )
+
+var processWorkerMetadata = newWorkerMetadataProvider(debug.ReadBuildInfo, appBinarySize)
+
+// newWorkerMetadataProvider retains a private, process-lifetime snapshot. Each
+// caller owns its returned protobuf and map; only immutable strings are shared.
+// The readers are injected here so tests need not reset package-global caches.
+func newWorkerMetadataProvider(readBuildInfo func() (*debug.BuildInfo, bool), readBinarySize func() string) func() *pb.WorkerMetadata {
+	template := sync.OnceValue(func() *pb.WorkerMetadata {
+		bi, ok := readBuildInfo()
+		if !ok {
+			bi = nil
+		}
+		md := buildWorkerMetadataFromBuildInfo(bi)
+		// File size is independent of embedded build-info availability.
+		md.CustomProperties[MetaAppBinarySizeBytes] = readBinarySize()
+		return md
+	})
+	return func() *pb.WorkerMetadata {
+		return proto.Clone(template()).(*pb.WorkerMetadata)
+	}
+}
 
 // buildWorkerMetadata constructs the WorkerMetadata reported in
 // WorkerInitResponse and FunctionEnvironmentReloadResponse. Custom properties
@@ -53,11 +80,7 @@ const (
 // "(replaced)" when a `replace` directive points the SDK at a
 // versionless local path.
 func buildWorkerMetadata() *pb.WorkerMetadata {
-	bi, ok := debug.ReadBuildInfo()
-	if !ok {
-		bi = nil
-	}
-	return buildWorkerMetadataFromBuildInfo(bi)
+	return processWorkerMetadata()
 }
 
 func buildWorkerMetadataFromBuildInfo(bi *debug.BuildInfo) *pb.WorkerMetadata {
@@ -66,11 +89,12 @@ func buildWorkerMetadataFromBuildInfo(bi *debug.BuildInfo) *pb.WorkerMetadata {
 		RuntimeVersion: runtime.Version(),
 		WorkerBitness:  runtime.GOOS + "/" + runtime.GOARCH,
 		CustomProperties: map[string]string{
-			MetaSDKReplaced:     "false",
-			MetaSDKReplacePath:  "",
-			MetaAppBuiltDirty:   "false",
-			MetaAppVCSRevision:  "",
-			MetaAppDependencies: buildDependencyInventory(bi),
+			MetaSDKReplaced:        "false",
+			MetaSDKReplacePath:     "",
+			MetaAppBuiltDirty:      "false",
+			MetaAppVCSRevision:     "",
+			MetaAppDependencies:    buildDependencyInventory(bi),
+			MetaAppBinarySizeBytes: "",
 		},
 	}
 
