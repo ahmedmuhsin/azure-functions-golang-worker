@@ -2,14 +2,15 @@ package worker
 
 import (
 	"context"
-	"encoding"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"reflect"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/azure/azure-functions-golang-worker/internal/bindingtype"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
@@ -490,6 +491,13 @@ func encodeHTTPResponse(proxy *ResponseWriterProxy) *pb.TypedData {
 // base64-encoded actions lands as a plain string the host's DurableTask
 // extension can read), and everything else is JSON-encoded so the host can
 // route it to output bindings / the function result.
+//
+// A nil pointer or interface anywhere in the chain sends no value, before any
+// marshaler is considered. Otherwise custom JSON and text marshalers keep
+// precedence, and non-nil pointers and interfaces are followed, so *string and
+// *[]byte use the same wire kinds as string and []byte. JSON encodes the
+// original value so encoding/json keeps its addressability rules. Text and JSON
+// must be valid UTF-8 because protobuf string fields cannot carry anything else.
 func encodeReturnValue(v any) (data *pb.TypedData, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -497,43 +505,47 @@ func encodeReturnValue(v any) (data *pb.TypedData, err error) {
 			err = fmt.Errorf("encode return value: %v", recovered)
 		}
 	}()
-	switch val := v.(type) {
-	case nil:
-		return nil, nil
-	case string:
-		return &pb.TypedData{Data: &pb.TypedData_String_{String_: val}}, nil
-	case []byte:
-		return &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: val}}, nil
-	case json.Number:
-		b, err := json.Marshal(val)
-		if err != nil {
-			return nil, fmt.Errorf("encode return value: %w", err)
+	rv := reflect.ValueOf(v)
+	seen := make(map[uintptr]bool)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil, nil
 		}
-		return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(b)}}, nil
-	default:
-		// Preserve encoding/json's JSON and text marshaler precedence before
-		// treating a defined string/byte type as a raw value.
-		_, jsonMarshaler := v.(json.Marshaler)
-		_, textMarshaler := v.(encoding.TextMarshaler)
-		if !jsonMarshaler && !textMarshaler {
-			rv := reflect.ValueOf(v)
-			if rv.Kind() == reflect.String {
-				return &pb.TypedData{Data: &pb.TypedData_String_{String_: rv.String()}}, nil
+		if rv.Kind() == reflect.Pointer {
+			// Leave a cyclic value to encoding/json, which reports the cycle.
+			if seen[rv.Pointer()] {
+				break
 			}
-			if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
-				payload := make([]byte, rv.Len())
-				for i := range payload {
-					payload[i] = byte(rv.Index(i).Uint())
-				}
-				return &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: payload}}, nil
-			}
+			seen[rv.Pointer()] = true
 		}
-		b, err := json.Marshal(val)
-		if err != nil {
-			return nil, fmt.Errorf("encode return value: %w", err)
-		}
-		return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(b)}}, nil
+		rv = rv.Elem()
 	}
+	if !rv.IsValid() {
+		return nil, nil
+	}
+	// Like encoding/json, a value reached through a pointer is addressable and
+	// can use pointer-receiver marshalers.
+	t := rv.Type()
+	if !bindingtype.Marshals(t) && !(rv.CanAddr() && bindingtype.Marshals(reflect.PointerTo(t))) {
+		if bindingtype.IsText(t) {
+			if !utf8.ValidString(rv.String()) {
+				return nil, fmt.Errorf("encode return value: text is not valid UTF-8; return []byte for binary data")
+			}
+			return &pb.TypedData{Data: &pb.TypedData_String_{String_: rv.String()}}, nil
+		}
+		if bindingtype.IsBytes(t) {
+			return &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: rv.Bytes()}}, nil
+		}
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("encode return value: %w", err)
+	}
+	// Custom marshalers, including json.RawMessage, can emit bytes that are not UTF-8.
+	if !utf8.Valid(b) {
+		return nil, fmt.Errorf("encode return value: JSON is not valid UTF-8")
+	}
+	return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(b)}}, nil
 }
 
 // Needed for context type checking

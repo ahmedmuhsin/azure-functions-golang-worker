@@ -16,9 +16,16 @@ import (
 
 // GenericTrigger registers a host-provided non-HTTP trigger without a typed
 // trigger package. The handler must be func(context.Context, T) error or
-// func(context.Context, T) (R, error). It runs through the normal middleware
-// chain. Registration panics on invalid metadata or handler signatures, like
-// the other App registration methods. Caller-owned properties are snapshotted.
+// func(context.Context, T) (R, error), where T is raw text, raw bytes, or
+// JSON-decodable, and R is raw text, raw bytes, or JSON-encodable. It runs
+// through the normal middleware chain. Registration panics on invalid metadata
+// or handler signatures, like the other App registration methods. It also
+// rejects types that JSON cannot represent, such as channels, functions,
+// non-empty interface payloads, and map keys JSON cannot use. Custom JSON and
+// text codecs are allowed. Struct fields are checked by encoding/json during
+// conversion. Pointer-only recursive types such as type P *P are rejected
+// anywhere in a payload, because decoding one can loop forever. Caller-owned
+// properties are snapshotted.
 //
 // Strings and byte slices receive the host payload unchanged, including JSON
 // quoting; their custom UnmarshalJSON methods are not called. json.Number is a
@@ -37,7 +44,11 @@ import (
 // their existing adapters. This method does not select a ClientFactory.
 //
 // A return value is only useful when consumed by the host trigger extension or
-// a declared $return output binding. Named output bindings are not supported.
+// a declared $return output binding. A nil pointer or interface result sends
+// no value. Otherwise custom JSON and text marshalers apply first, then
+// pointers are followed, so *string and *[]byte are sent like string and
+// []byte, and other values are JSON. Text and JSON results must be valid UTF-8.
+// Named output bindings are not supported.
 // Trigger-specific options such as WithQueueName do not apply;
 // put their host configuration in trigger.Properties instead.
 func (app *App) GenericTrigger(name string, f any, trigger *bindings.GenericTrigger, opts ...Option) *RegisteredFunction {
@@ -68,18 +79,16 @@ func validateGenericHandler(f any, cardinality string) {
 	if pt.Implements(reflect.TypeFor[context.Context]()) || pt.Implements(reflect.TypeFor[http.ResponseWriter]()) {
 		fail("payload must be data, not a context or HTTP response writer")
 	}
-	if err := bindingtype.Validate(pt); err != nil {
+	if err := bindingtype.ValidatePayload(pt); err != nil {
 		fail(err.Error())
 	}
-	pt, _ = bindingtype.Base(pt) // Validate already checked all pointer chains.
-	switch pt.Kind() {
-	case reflect.String, reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64, reflect.Struct, reflect.Map, reflect.Slice, reflect.Interface:
-	default:
-		fail(fmt.Sprintf("unsupported payload type %s; use text, bytes, or a JSON model", pt))
+	if ft.NumOut() == 2 {
+		if err := bindingtype.ValidateResult(ft.Out(0)); err != nil {
+			fail(err.Error())
+		}
 	}
-	if cardinality == "many" && (pt.Kind() != reflect.Slice || pt.Elem().Kind() == reflect.Uint8) {
+	pt, _ = bindingtype.Base(pt) // ValidatePayload already checked all pointer chains.
+	if cardinality == "many" && (pt.Kind() != reflect.Slice || bindingtype.IsBytes(pt)) {
 		fail("cardinality many requires a slice payload such as []Order or [][]byte, not a single []byte")
 	}
 }

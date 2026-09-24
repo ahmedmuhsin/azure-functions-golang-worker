@@ -32,7 +32,7 @@ func decodeGenericInput(t reflect.Type, data *pb.TypedData) (value reflect.Value
 		if err != nil {
 			return reflect.Value{}, err
 		}
-		if !isGenericRawType(base) && genericInputIsNull(data) {
+		if !bindingtype.IsRaw(base) && genericInputIsNull(data) {
 			return reflect.Zero(t), nil
 		}
 		value, err := decodeGenericInput(t.Elem(), data)
@@ -44,7 +44,7 @@ func decodeGenericInput(t reflect.Type, data *pb.TypedData) (value reflect.Value
 		return ptr.Convert(t), nil
 	}
 	if values, ok := typedDataCollectionValues(data); ok {
-		if t.Kind() != reflect.Slice || t.Elem().Kind() == reflect.Uint8 {
+		if t.Kind() != reflect.Slice || bindingtype.IsBytes(t) {
 			return reflect.Value{}, fmt.Errorf("host collection requires a slice, got %s", t)
 		}
 		if reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]()) {
@@ -64,7 +64,7 @@ func decodeGenericInput(t reflect.Type, data *pb.TypedData) (value reflect.Value
 		}
 		return result, nil
 	}
-	if isGenericRawType(t) {
+	if bindingtype.IsRaw(t) {
 		return decodeGenericRaw(t, data)
 	}
 	if genericInputIsNull(data) && t.Kind() != reflect.Map && t.Kind() != reflect.Slice && t.Kind() != reflect.Interface {
@@ -75,11 +75,6 @@ func decodeGenericInput(t reflect.Type, data *pb.TypedData) (value reflect.Value
 		return reflect.Value{}, err
 	}
 	return decodeGenericJSON(t, reader)
-}
-
-func isGenericRawType(t reflect.Type) bool {
-	return (t.Kind() == reflect.String && t != reflect.TypeFor[json.Number]()) ||
-		(t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8)
 }
 
 func genericInputIsNull(data *pb.TypedData) bool {
@@ -118,7 +113,7 @@ func decodeGenericRaw(t reflect.Type, data *pb.TypedData) (reflect.Value, error)
 	default:
 		return reflect.Value{}, fmt.Errorf("unsupported host payload kind %T", data.Data)
 	}
-	if t.Kind() == reflect.String {
+	if bindingtype.IsText(t) {
 		if binary {
 			text = string(raw)
 		}
@@ -185,14 +180,14 @@ func genericCollectionJSON(element reflect.Type, values []*pb.TypedData) ([]byte
 	array := make([]json.RawMessage, len(values))
 	for i, value := range values {
 		var encoded []byte
-		if isGenericRawType(base) {
+		if bindingtype.IsRaw(base) {
 			decoded, err := decodeGenericRaw(base, value)
 			if err != nil {
 				return nil, fmt.Errorf("element %d: %w", i, err)
 			}
 			// Use built-in raw types so a named element's MarshalJSON cannot
 			// change input normalization or run application serialization code.
-			if base.Kind() == reflect.String {
+			if bindingtype.IsText(base) {
 				encoded, err = json.Marshal(decoded.String())
 			} else {
 				encoded, err = json.Marshal(decoded.Bytes())

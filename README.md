@@ -182,7 +182,9 @@ app.GenericTrigger("ProcessOrder", func(ctx context.Context, body []byte) error 
 ```
 
 Text and byte slices receive the raw payload. Structs and other JSON models
-are decoded into the handler's parameter type. Dynamic JSON fields use
+are decoded into the handler's parameter type. Results are returned as raw
+text, raw bytes, or JSON. Registration rejects types JSON cannot represent,
+such as channels. Dynamic JSON fields use
 `json.Number` instead of `float64` so large integer IDs remain exact. Set `Cardinality: "many"` to
 request host batching when the extension supports it, and accept a slice.
 The usual invocation context and middleware still apply.

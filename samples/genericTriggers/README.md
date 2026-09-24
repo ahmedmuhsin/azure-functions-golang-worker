@@ -104,6 +104,13 @@ No generic Go declaration installs a missing host extension.
   property maps, including nested values. Reserved-key collisions are errors.
   Treat registered metadata as immutable.
 - Handlers take `(context.Context, T)` and return `error` or `(R, error)`.
+  `T` must be raw text, raw bytes, or JSON-decodable, and `R` must be raw
+  text, raw bytes, or JSON-encodable. Registration rejects types that JSON
+  cannot represent, such as channels, functions, non-empty interface payloads
+  like `io.Reader`, and map keys JSON cannot use. Custom JSON and text
+  codecs are allowed. Struct fields follow `encoding/json` rules and fail per
+  invocation. Pointer-only recursive types such as `type P *P` are rejected
+  anywhere in a payload, because decoding one can loop forever.
   Text and byte slices preserve the payload, including JSON quoting. Other
   types use JSON decoding. Pointer models can receive JSON null. Matching
   string/byte representations avoid payload-sized copies; treat input bytes
@@ -119,7 +126,11 @@ No generic Go declaration installs a missing host extension.
   collection. Raw text elements become JSON strings, raw byte elements become
   base64 JSON strings, and structured elements remain JSON. The custom batch
   decoder owns null handling, element validation, and its own number policy.
-  Return encoding honors both `json.Marshaler` and `encoding.TextMarshaler`.
+  Return encoding sends no value for a nil pointer or interface result.
+  Otherwise it honors `json.Marshaler` and `encoding.TextMarshaler` first,
+  then follows pointers, so `*string` and `*[]byte` return text and bytes like
+  `string` and `[]byte`. Text and JSON results must be valid UTF-8, so return
+  `[]byte` for binary data.
 - Host collections decode element by element into slices, preserving empty
   entries. An ordinary JSON array does not automatically request host batching.
 - `TriggerMetadataValues` preserves primitive values, primitive collections,

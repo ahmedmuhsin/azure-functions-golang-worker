@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,6 +13,34 @@ import (
 )
 
 type recursiveGenericPointer *recursiveGenericPointer
+
+// scoreTable has a key type JSON cannot use directly, so its custom codecs
+// must keep it valid as both a payload and a result.
+type scoreTable map[float64]string
+
+func (s *scoreTable) UnmarshalJSON(data []byte) error {
+	var values map[string]string
+	if err := json.Unmarshal(data, &values); err != nil {
+		return err
+	}
+	*s = scoreTable{}
+	for key, value := range values {
+		score, err := strconv.ParseFloat(key, 64)
+		if err != nil {
+			return err
+		}
+		(*s)[score] = value
+	}
+	return nil
+}
+
+func (s scoreTable) MarshalJSON() ([]byte, error) {
+	values := make(map[string]string, len(s))
+	for score, value := range s {
+		values[strconv.FormatFloat(score, 'g', -1, 64)] = value
+	}
+	return json.Marshal(values)
+}
 
 func TestGenericTriggerRegistration(t *testing.T) {
 	for _, lowLevel := range []bool{false, true} {
@@ -68,6 +98,11 @@ func TestGenericTriggerRejectsInvalidRegistration(t *testing.T) {
 		{name: "no error", fn: func(context.Context, []byte) {}, want: "error"},
 		{name: "too many results", fn: func(context.Context, []byte) (string, int, error) { return "", 0, nil }, want: "error"},
 		{name: "channel payload", fn: func(context.Context, chan int) error { return nil }, want: "payload"},
+		{name: "interface payload", fn: func(context.Context, io.Reader) error { return nil }, want: "payload type io.Reader"},
+		{name: "float map key payload", fn: func(context.Context, map[float64]string) error { return nil }, want: "map key float64"},
+		{name: "channel result", fn: func(context.Context, []byte) (chan int, error) { return nil, nil }, want: "result type chan int"},
+		{name: "function batch result", fn: func(context.Context, []byte) ([]func(), error) { return nil, nil }, want: "result type []func()"},
+		{name: "interface map key result", fn: func(context.Context, []byte) (map[any]string, error) { return nil, nil }, want: "map key interface {}"},
 		{name: "recursive pointer", fn: func(context.Context, recursiveGenericPointer) error { return nil }, want: "recursive"},
 		{name: "recursive batch element", fn: func(context.Context, []recursiveGenericPointer) error { return nil }, want: "recursive"},
 		{name: "recursive map value", fn: func(context.Context, map[string]recursiveGenericPointer) error { return nil }, want: "recursive"},
@@ -118,6 +153,23 @@ func TestGenericRegistrationMarshalsPropertiesOnce(t *testing.T) {
 	data, err := json.Marshal(rf.RawBindings[0])
 	if err != nil || !strings.Contains(string(data), `"nested":{"id":9007199254740993}`) || calls != 1 {
 		t.Fatalf("snapshot=%s error=%v calls=%d", data, err, calls)
+	}
+}
+
+func TestGenericRegistrationAllowsConvertibleTypes(t *testing.T) {
+	for name, fn := range map[string]any{
+		"custom codecs":   func(context.Context, scoreTable) (scoreTable, error) { return nil, nil },
+		"pointer results": func(context.Context, *string) (*[]byte, error) { return nil, nil },
+		"dynamic result":  func(context.Context, []any) (any, error) { return nil, nil },
+		"arrays":          func(context.Context, [2]int) ([2]string, error) { return [2]string{}, nil },
+		// Struct fields follow encoding/json rules and are checked during conversion.
+		"struct fields": func(context.Context, struct{ Body io.Reader }) (struct{ Done chan int }, error) {
+			return struct{ Done chan int }{}, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			FunctionApp().GenericTrigger("Valid", fn, &bindings.GenericTrigger{Type: "customTrigger", Name: "event"})
+		})
 	}
 }
 
