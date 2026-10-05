@@ -54,6 +54,7 @@ func TestIntegrationTestPatternSelectsEveryScenario(t *testing.T) {
 		"TestCosmosDBTriggerFires",
 		"TestSQLTriggerFiresOnChanges",
 		"TestDurableOrchestrations",
+		"TestDurableMiddlewareOrdering",
 	}
 	for _, testName := range expectedTests {
 		if !pattern.MatchString(testName) {
